@@ -1,0 +1,22 @@
+# Prod compose for the NAS (192.168.0.20) — the image is built there by
+# scripts/deploy-nas.sh; this file exists so Dockhand (or `docker compose up -d`) can
+# manage the same container without remembering the docker run flags.
+services:
+  allison-dispatch:
+    image: allison-dispatch:latest
+    build: .
+    container_name: allison-dispatch
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+    ports:
+      - "8086:8086"
+    environment:
+      - PORT=8086
+      - DATA_DIR=/data
+      - DISPATCHARR_URL=http://192.168.0.20:9191
+    volumes:
+      - /volume1/docker/allison-dispatch/data:/data:rw

@@ -1,0 +1,23 @@
+services:
+  allison-dispatch:
+    build: .
+    image: allison-dispatch:latest
+    # Bounded on purpose — same reasoning as the sibling app: a default json-file driver
+    # keeps every line forever, and this app logs sync and playback events continuously.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+    ports:
+      - "8086:8086"
+    environment:
+      - PORT=8086
+      - DATA_DIR=/data
+      # The Dispatcharr instance this app consumes. It must be reachable from this
+      # container, and Dispatcharr's M3U_EPG network-ACL scope must include this host
+      # (default: localhost + LAN CIDRs — a NAS-to-NAS/LAN deployment needs no change).
+      - DISPATCHARR_URL=http://192.168.0.20:9191
+    volumes:
+      - ./data:/data:rw

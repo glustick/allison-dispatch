@@ -1,0 +1,527 @@
+:root {
+  color-scheme: dark;
+  --bg: #10141a;
+  --panel: #181e27;
+  --border: #263040;
+  --text: #e6ebf2;
+  --muted: #8fa0b5;
+  --accent: #4f9cf9;
+  --ok: #4ade80;
+  --error: #f87171;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.shell {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 2rem 1.25rem;
+}
+
+/* The combined TV screen wants the room — player + guide side by side with the channel bar. */
+.shell-wide {
+  max-width: 1280px;
+}
+
+.shell-header h1 {
+  margin: 0;
+  font-size: 1.6rem;
+}
+
+.subtitle {
+  margin: 0.25rem 0 0;
+  color: var(--muted);
+}
+
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin: 1.25rem 0;
+}
+
+.tab {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  padding: 0.45rem 1.1rem;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.tab-active {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* Shared bits */
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25rem;
+}
+
+.card h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.toolbar {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+  flex-wrap: wrap;
+}
+
+input,
+select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 0.45rem 0.7rem;
+  font-size: 0.95rem;
+}
+
+input[type='url'] {
+  flex: 1;
+  min-width: 240px;
+}
+
+button {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 0.45rem 0.9rem;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.status-error {
+  color: var(--error);
+  margin: 0.5rem 0 0;
+}
+
+.ok-note {
+  color: var(--ok);
+  margin: 0.5rem 0 0;
+}
+
+.muted-note {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 0.5rem 0 0;
+}
+
+.empty-hint {
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  padding: 1.25rem;
+}
+
+/* Channel bar (sidebar) entries */
+.channel-number {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.channel-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Sync status table */
+.sync-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.sync-table th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 500;
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.sync-table td {
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Watch */
+.watch-layout {
+  display: grid;
+  /* Columns come from inline style: sidebar-width, handle, player — the sidebar is resizable. */
+  grid-template-columns: 280px 6px 1fr;
+  gap: 0.5rem;
+  align-items: start;
+}
+
+.resize-handle-v {
+  align-self: stretch;
+  cursor: col-resize;
+  border-radius: 3px;
+  background: transparent;
+}
+
+.resize-handle-v:hover,
+.resize-handle-v:active {
+  background: var(--accent);
+}
+
+.watch-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.watch-list select {
+  width: 100%;
+}
+
+.watch-channel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 60vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.watch-channel {
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  width: 100%;
+  text-align: left;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 0.45rem 0.6rem;
+  margin: 0;
+}
+
+.watch-channel-active {
+  border-color: var(--accent);
+}
+
+.watch-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.video-frame {
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.watch-video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+}
+
+.watch-bar {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+
+.watch-now-next strong {
+  font-size: 1rem;
+}
+
+.watch-controls {
+  display: flex;
+  gap: 0.9rem;
+  align-items: center;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.status-banner {
+  margin: 0;
+  padding: 0.6rem 0.9rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+}
+
+.status-banner-ok {
+  color: var(--ok);
+}
+
+.status-banner-warn {
+  color: #fbbf24;
+}
+
+.status-banner-error {
+  color: var(--error);
+}
+
+/* EPG grid — modeled on the sibling app's own EpgGrid styles, retuned to this palette. */
+.epg-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.epg-time-header {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.epg-grid-nav {
+  position: relative;
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.epg-now-btn {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 4px 0;
+  cursor: pointer;
+}
+
+.epg-now-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.epg-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  cursor: col-resize;
+}
+
+.epg-resize-handle:hover,
+.epg-resize-handle:active {
+  background: var(--accent);
+}
+
+.epg-time-header-track,
+.epg-row-timeline {
+  cursor: grab;
+}
+
+.epg-grid--panning .epg-time-header-track,
+.epg-grid--panning .epg-row-timeline {
+  cursor: grabbing;
+}
+
+.epg-grid--panning {
+  user-select: none;
+}
+
+.epg-time-header-track {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+}
+
+.epg-time-tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.epg-time-tick--now {
+  color: var(--error);
+  font-weight: 600;
+}
+
+.epg-grid-body {
+  overflow-y: auto;
+  max-height: 62vh;
+}
+
+/* Embedded under the player in the TV view — leave the video the lion's share of the screen. */
+.epg-grid--embedded .epg-grid-body {
+  max-height: 42vh;
+}
+
+.epg-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.epg-row {
+  display: flex;
+  align-items: stretch;
+}
+
+.epg-row-channel {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 4px 8px 4px 4px;
+  margin: 0;
+  overflow: hidden;
+  cursor: pointer;
+  text-align: left;
+}
+
+.epg-row-channel img,
+.epg-row-channel-icon.placeholder {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+.epg-row-channel-icon.placeholder {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.epg-row-channel-name {
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.epg-row-timeline {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  margin-left: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.epg-row-loading,
+.epg-row-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.epg-block {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  margin: 0;
+  overflow: hidden;
+  background: #223047;
+  border: 1px solid #33507a;
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 0.75rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.epg-block--past {
+  opacity: 0.45;
+}
+
+.epg-block--live {
+  border-color: var(--accent);
+  background: #1d3540;
+}
+
+.epg-block-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.epg-now-indicator {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--error);
+  pointer-events: none;
+}
+
+.epg-detail {
+  margin-top: 0.5rem;
+}
+
+.epg-detail p {
+  margin: 0.35rem 0;
+}
