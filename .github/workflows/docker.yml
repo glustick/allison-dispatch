@@ -26,6 +26,12 @@ jobs:
           node-version: 22
           cache: npm
 
+      # ubuntu-latest has no ffmpeg on PATH, and the audio-fix tests exercise the relay's
+      # real-binary resolution: without this, resolveFfmpegBin() falls back to the bundled
+      # ffmpeg-static build, which SIGSEGVs demuxing real TS under Linux (the exact bug
+      # class under test). Mirrors the runtime image, which installs Debian's ffmpeg.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
       - run: npm ci
 
       - run: npm run lint
