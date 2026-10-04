@@ -57,9 +57,12 @@ const FFMPEG_BIN_FALLBACK = ffmpegPath as unknown as string
 
 // Prefer a system ffmpeg (the Docker image ships Debian's — the bundled static linux build
 // SIGSEGVs demuxing real Dispatcharr streams; see the Dockerfile), then fall back to the
-// bundled binary for local dev machines without ffmpeg on PATH. Resolved once.
+// bundled binary for local dev machines without ffmpeg on PATH. Resolved once. Exported for
+// the audio-fix tests, which must probe/generate with the same binary the relay actually
+// uses — the bundled one segfaults on real TS under Linux, which is exactly what the tests
+// are exercising.
 let ffmpegBinCache: string | null = null
-function resolveFfmpegBin(): string {
+export function resolveFfmpegBin(): string {
   if (ffmpegBinCache !== null) return ffmpegBinCache
   const override = process.env.FFMPEG_PATH?.trim()
   if (override !== undefined && override !== '') {

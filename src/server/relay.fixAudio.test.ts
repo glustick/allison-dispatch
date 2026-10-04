@@ -3,33 +3,33 @@ import { spawnSync } from 'child_process'
 import { existsSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import path from 'path'
-import ffmpegPath from 'ffmpeg-static'
 import { openDb, type Db } from './db.js'
 import { startFakeDispatcharr, type FakeDispatcharr } from './testing/fakeDispatcharr.js'
 import { DEFAULT_FAKE_CHANNELS } from './testing/fixtures.js'
 import { syncM3u } from './sync.js'
-import { relayStream } from './relay.js'
+import { relayStream, resolveFfmpegBin } from './relay.js'
 import type { ChildProcess } from 'child_process'
 
 // The audio-fix relay, proven with real ffmpeg: the fake serves a genuinely encoded TS
 // fixture carrying AC-3 audio (what Dispatcharr actually delivers — verified live on
-// 2026-10-04), and the relayed output must carry AAC. The fixture is generated once and
-// cached; tests use generous timeouts because real encoding is timing-sensitive.
-
-const FFMPEG_BIN = ffmpegPath as unknown as string
+// 2026-10-04), and the relayed output must carry AAC. Fixture generation AND the codec
+// probe use resolveFfmpegBin() — the same resolution the relay itself uses — because the
+// bundled static binary SIGSEGVs demuxing real TS under Linux (the exact class of bug these
+// tests guard). The fixture is 45s long so the fake's byte-loop never rewinds timestamps
+// during a capture window (non-monotonic PTS makes some ffmpeg builds drop everything).
 
 const FIXTURE_PATH = path.join(tmpdir(), 'allison-dispatch-ac3-fixture.ts')
 
 function ensureAc3Fixture(): string {
   if (existsSync(FIXTURE_PATH)) return FIXTURE_PATH
-  const result = spawnSync(FFMPEG_BIN, [
+  const result = spawnSync(resolveFfmpegBin(), [
     '-hide_banner', '-loglevel', 'error',
-    '-f', 'lavfi', '-i', 'testsrc=duration=2:size=320x240:rate=15',
-    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
+    '-f', 'lavfi', '-i', 'testsrc=duration=45:size=320x240:rate=15',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=45',
     '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
     '-c:a', 'ac3', '-b:a', '128k',
     '-f', 'mpegts', '-y', FIXTURE_PATH
-  ], { timeout: 30_000 })
+  ], { timeout: 120_000 })
   if (result.status !== 0 || !existsSync(FIXTURE_PATH)) {
     throw new Error(`fixture generation failed: ${result.stderr?.toString().slice(0, 400)}`)
   }
@@ -61,7 +61,7 @@ async function captureBytes(url: string, ms: number): Promise<Buffer> {
 }
 
 function probeCodecs(file: string): string {
-  const result = spawnSync(FFMPEG_BIN, ['-hide_banner', '-i', file], { encoding: 'utf8' })
+  const result = spawnSync(resolveFfmpegBin(), ['-hide_banner', '-i', file], { encoding: 'utf8' })
   return result.stderr ?? ''
 }
 
@@ -69,6 +69,7 @@ describe('audio-fix relay (real ffmpeg)', () => {
   let fake: FakeDispatcharr
   let db: Db
   let spawned: ChildProcess[]
+  let stderrAll: string
 
   beforeEach(async () => {
     ensureAc3Fixture()
@@ -76,6 +77,7 @@ describe('audio-fix relay (real ffmpeg)', () => {
     db = openDb(':memory:')
     await syncM3u({ db, dispatcharrUrl: fake.url })
     spawned = []
+    stderrAll = ''
   })
 
   afterEach(async () => {
@@ -86,7 +88,11 @@ describe('audio-fix relay (real ffmpeg)', () => {
     const { createServer } = await import('http')
     const server = createServer((req, res) => {
       void relayStream(
-        { db, dispatcharrUrl: fake.url, onFfmpegSpawn: (p) => spawned.push(p) },
+        { db, dispatcharrUrl: fake.url, onFfmpegSpawn: (p) => {
+          spawned.push(p)
+          console.log('[diag] spawned:', p.spawnfile, p.spawnargs?.slice(2).join(' '))
+          p.stderr?.on('data', (d: Buffer) => { stderrAll += d.toString() })
+        } },
         DEFAULT_FAKE_CHANNELS[0].uuid, null, res, req, true
       )
     })
@@ -97,6 +103,9 @@ describe('audio-fix relay (real ffmpeg)', () => {
       // a busy CI runner (the same cold-start latency measured at ~8s against real
       // Dispatcharr) — a tight window here fails with zero bytes, not a codec problem.
       const out = await captureBytes(url, 15_000)
+      if (out.length === 0) {
+        console.log('[diag] captured ZERO bytes; ffmpeg stderr:', stderrAll.slice(0, 1200))
+      }
       expect(out.length).toBeGreaterThan(20_000) // real encoded bytes flowed
       const outFile = path.join(tmpdir(), `allison-dispatch-fixaudio-out-${Date.now()}.ts`)
       writeFileSync(outFile, out)
