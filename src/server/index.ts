@@ -4,9 +4,28 @@ import { readAppVersion } from './version.js'
 import { openDb } from './db.js'
 import { resolveDispatcharrUrl } from './settingsStore.js'
 import { runSync, SyncFailure } from './sync.js'
+import { ensureSeedUser, validatePassword, validateUsername } from './auth.js'
 
 const cfg = loadConfig(process.env)
 const db = openDb(cfg.dataDir)
+
+// First-boot seeding: creates the initial admin ONLY when no users exist at all. The
+// credentials come from the environment (passed once at deploy time) — never hardcoded in
+// this public repo — and the seeded account lives in SQLite on the /data volume, so it
+// survives every image upgrade. Later boots with users present skip this entirely.
+const seedUsername = process.env.SEED_ADMIN_USERNAME?.trim()
+const seedPassword = process.env.SEED_ADMIN_PASSWORD
+if (seedUsername !== undefined && seedUsername !== '' && seedPassword !== undefined && seedPassword !== '') {
+  try {
+    validateUsername(seedUsername)
+    validatePassword(seedPassword)
+    const { seeded } = ensureSeedUser(db, seedUsername, seedPassword)
+    console.log(seeded ? `[auth] seeded initial admin user '${seedUsername}'` : '[auth] users already exist — seed skipped')
+  } catch (err) {
+    console.log(`[auth] seed skipped: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
 const app = createApp(cfg, { db })
 
 app.listen(cfg.port, () => {

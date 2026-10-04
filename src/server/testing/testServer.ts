@@ -1,6 +1,8 @@
 import { createServer, type Server } from 'http'
 import type { Express } from 'express'
 import { AddressInfo } from 'net'
+import type { Db } from '../db.js'
+import { ensureSeedUser } from '../auth.js'
 
 export interface RunningApp {
   url: string
@@ -24,4 +26,19 @@ export async function startHttpServer(app: Express): Promise<RunningApp> {
         server.close((err) => (err ? reject(err) : resolve()))
       })
   }
+}
+
+/**
+ * Seeds a user into the app's db and returns a logged-in cookie header value. Suites that
+ * exercise API surfaces behind the auth gate call this once in beforeEach.
+ */
+export async function seedAndLogin(db: Db, url: string, username = 'tester', password = 'tester123'): Promise<string> {
+  ensureSeedUser(db, username, password)
+  const res = await fetch(`${url}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username, password })
+  })
+  if (!res.ok) throw new Error(`seedAndLogin: login failed with ${res.status}`)
+  return (res.headers.get('set-cookie') ?? '').split(';')[0]
 }

@@ -47,6 +47,19 @@ const MIGRATIONS: string[] = [
     item_count INTEGER,
     error TEXT
   );
+  `,
+  // v2 — accounts: the app is exposed to the public internet via the reverse proxy, so
+  // playback and APIs sit behind a login. Users live in SQLite on the /data volume, which
+  // the compose file mounts from the host — accounts, sessions' signing secret and all
+  // state survive image upgrades by construction.
+  `
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    is_admin INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
   `
 ]
 

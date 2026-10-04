@@ -8,6 +8,12 @@ import {
   type SyncStatusResponse
 } from '../lib/api.js'
 
+export interface SettingsUser {
+  id: number
+  username: string
+  isAdmin: boolean
+}
+
 function formatLastRun(epochMs: number | null): string {
   if (epochMs === null) return 'never'
   const seconds = Math.floor((Date.now() - epochMs) / 1000)
@@ -17,7 +23,170 @@ function formatLastRun(epochMs: number | null): string {
   return `${Math.floor(seconds / 86400)}d ago`
 }
 
-export default function SettingsView(): React.JSX.Element {
+function UsersPanel({ currentUser, onChanged }: { currentUser: SettingsUser; onChanged: () => void }): React.JSX.Element | null {
+  const [users, setUsers] = useState<SettingsUser[] | null>(null)
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [makeAdmin, setMakeAdmin] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [resetFor, setResetFor] = useState<SettingsUser | null>(null)
+  const [resetPassword, setResetPassword] = useState('')
+
+  const reload = useCallback(async (): Promise<void> => {
+    try {
+      const body = await getJson<{ users: SettingsUser[] }>('/api/users')
+      setUsers(body.users)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [])
+
+  useEffect(() => {
+    void reload()
+  }, [reload])
+
+  if (currentUser.isAdmin !== true) return null
+
+  async function create(): Promise<void> {
+    setNotice(null)
+    setError(null)
+    try {
+      await sendJson('/api/users', 'POST', { username, password, isAdmin: makeAdmin })
+      setUsername('')
+      setPassword('')
+      setMakeAdmin(false)
+      setNotice(`User '${username}' created.`)
+      await reload()
+      onChanged()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function remove(user: SettingsUser): Promise<void> {
+    setNotice(null)
+    setError(null)
+    try {
+      await sendJson(`/api/users/${user.id}`, 'DELETE')
+      setNotice(`User '${user.username}' deleted.`)
+      await reload()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function reset(): Promise<void> {
+    if (resetFor === null) return
+    setNotice(null)
+    setError(null)
+    try {
+      await sendJson(`/api/users/${resetFor.id}/password`, 'PUT', { password: resetPassword })
+      setNotice(`Password set for '${resetFor.username}'.`)
+      setResetFor(null)
+      setResetPassword('')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2>Users</h2>
+      <ul className="user-list">
+        {(users ?? []).map((u) => (
+          <li key={u.id} className="user-row">
+            <span className="user-name">{u.username}</span>
+            {u.isAdmin && <span className="user-badge">admin</span>}
+            {u.id !== currentUser.id && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setResetFor(resetFor?.id === u.id ? null : u)
+                    setResetPassword('')
+                  }}
+                >
+                  Set password
+                </button>
+                <button type="button" className="danger" onClick={() => void remove(u)}>
+                  Delete
+                </button>
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+      {resetFor !== null && (
+        <div className="toolbar">
+          <input
+            type="password"
+            placeholder={`New password for ${resetFor.username}`}
+            value={resetPassword}
+            onChange={(e) => setResetPassword(e.target.value)}
+          />
+          <button type="button" disabled={resetPassword.length < 6} onClick={() => void reset()}>
+            Save
+          </button>
+          <button type="button" onClick={() => setResetFor(null)}>Cancel</button>
+        </div>
+      )}
+      <h2>Create user</h2>
+      <div className="toolbar">
+        <input type="text" placeholder="Username" value={username} onChange={(e) => setUsername(e.target.value)} />
+        <input type="password" placeholder="Password (6+ chars)" value={password} onChange={(e) => setPassword(e.target.value)} />
+      </div>
+      <div className="toolbar">
+        <label>
+          <input type="checkbox" checked={makeAdmin} onChange={(e) => setMakeAdmin(e.target.checked)} />{' '}
+          Administrator (can manage users)
+        </label>
+        <button type="button" disabled={username === '' || password.length < 6} onClick={() => void create()}>
+          Create user
+        </button>
+      </div>
+      {notice !== null && <p className="ok-note">{notice}</p>}
+      {error !== null && <p className="status-error">{error}</p>}
+    </div>
+  )
+}
+
+function OwnPasswordCard(): React.JSX.Element {
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [notice, setNotice] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  async function change(): Promise<void> {
+    setNotice(null)
+    setError(null)
+    try {
+      await sendJson('/api/auth/password', 'PUT', { currentPassword, newPassword })
+      setCurrentPassword('')
+      setNewPassword('')
+      setNotice('Password changed.')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2>My password</h2>
+      <div className="toolbar">
+        <input type="password" placeholder="Current password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} />
+        <input type="password" placeholder="New password (6+ chars)" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
+        <button type="button" disabled={currentPassword === '' || newPassword.length < 6} onClick={() => void change()}>
+          Change
+        </button>
+      </div>
+      {notice !== null && <p className="ok-note">{notice}</p>}
+      {error !== null && <p className="status-error">{error}</p>}
+    </div>
+  )
+}
+
+export default function SettingsView({ currentUser }: { currentUser: SettingsUser }): React.JSX.Element {
   const [urlInput, setUrlInput] = useState('')
   const [source, setSource] = useState<SettingsResponse['source']>(null)
   const [loadedUrl, setLoadedUrl] = useState<string | null>(null)
@@ -169,6 +338,9 @@ export default function SettingsView(): React.JSX.Element {
         )}
         <p className="muted-note">Lineup syncs hourly, the guide every 6 hours (with jitter). Current URL: {loadedUrl ?? '—'}</p>
       </div>
+
+      <UsersPanel currentUser={currentUser} onChanged={() => {}} />
+      <OwnPasswordCard />
     </section>
   )
 }

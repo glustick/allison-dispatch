@@ -14,15 +14,18 @@ integration surface.
 
 ## Status
 
-One **TV** screen (watch + guide + channels combined) plus **Settings**. The TV screen:
-resizable channel bar on the left (search + group filter), player with now/next on the
-right, and the EPG guide grid under the player (drag-to-pan, now-line, programme detail —
-click any channel anywhere to tune). Playback always rides the BFF relay with the Dolby
-audio fix (ffmpeg video-copy + AC-3→AAC — every provider stream carries AC-3, so without
-it there is no audio; there is deliberately no toggle). Cold channels take ~8s to first
-byte while Dispatcharr spins up the provider session — the player shows "Connecting…".
-Under the hood: M3U + streaming XMLTV sync into SQLite, wire-level fake Dispatcharr
-tests, CI, Docker — all verified live against Dispatcharr v0.31.0 and deployed on the NAS.
+**Live at https://dispatch.iallison.com** (Nginx Proxy Manager on 192.168.0.3:8181 →
+192.168.0.20:8086, Let's Encrypt cert, streaming-safe proxy config: 86400s read/send
+timeouts + buffering off). One **TV** screen (watch + guide + channels combined) plus
+**Settings**. The TV screen: resizable channel bar on the left (search + group filter),
+player with now/next on the right, and the EPG guide grid under the player (drag-to-pan,
+now-line, programme detail — click any channel anywhere to tune). Playback always rides
+the BFF relay with the Dolby audio fix (ffmpeg video-copy + AC-3→AAC — every provider
+stream carries AC-3, so without it there is no audio; there is deliberately no toggle).
+Cold channels take ~8s to first byte while Dispatcharr spins up the provider session —
+the player shows "Connecting…". Under the hood: M3U + streaming XMLTV sync into SQLite,
+wire-level fake Dispatcharr tests, CI, Docker — all verified live against Dispatcharr
+v0.31.0 and deployed on the NAS.
 
 ### Deployment (live)
 

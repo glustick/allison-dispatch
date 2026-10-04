@@ -54,12 +54,13 @@ export async function getJson<T>(url: string): Promise<T> {
   return (await res.json()) as T
 }
 
-export async function sendJson<T>(url: string, method: 'POST' | 'PUT', body?: unknown): Promise<T> {
+export async function sendJson<T>(url: string, method: 'POST' | 'PUT' | 'DELETE', body?: unknown): Promise<T> {
   const res = await fetch(url, {
     method,
     headers: { 'content-type': 'application/json' },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {})
   })
+  if (res.status === 204) return undefined as T
   const parsed = (await res.json()) as T & { error?: string }
   if (!res.ok) throw new Error(parsed.error ?? `${method} ${url} failed with ${res.status}`)
   return parsed

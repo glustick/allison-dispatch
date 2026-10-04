@@ -21,6 +21,8 @@ echo "==> Removing any previous container..."
 sudo docker rm -f allison-dispatch 2>/dev/null || true
 
 echo "==> Starting allison-dispatch on :8086..."
+# Optional one-time first-boot seeding (only takes effect while NO users exist):
+#   SEED_ADMIN_USERNAME=chris SEED_ADMIN_PASSWORD='…' bash scripts/deploy-nas.sh
 sudo docker run -d --name allison-dispatch \
   --restart unless-stopped \
   -p 8086:8086 \
@@ -28,6 +30,8 @@ sudo docker run -d --name allison-dispatch \
   -e PORT=8086 \
   -e DATA_DIR=/data \
   -e DISPATCHARR_URL=http://192.168.0.20:9191 \
+  ${SEED_ADMIN_USERNAME:+-e SEED_ADMIN_USERNAME="$SEED_ADMIN_USERNAME"} \
+  ${SEED_ADMIN_PASSWORD:+-e SEED_ADMIN_PASSWORD="$SEED_ADMIN_PASSWORD"} \
   --log-driver json-file \
   --log-opt max-size=10m \
   --log-opt max-file=3 \

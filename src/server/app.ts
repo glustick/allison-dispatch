@@ -9,6 +9,22 @@ import { listChannels, nowNext, guideWindow, guideGrid, getSyncStates } from './
 import { getSetting, setDispatcharrUrl, clearDispatcharrUrl, resolveDispatcharrUrl, SETTING_KEYS } from './settingsStore.js'
 import { runSync, SyncFailure, type SyncSummary } from './sync.js'
 import { relayStream, buildStreamUrl, validateOutputFormat, parseFixAudio } from './relay.js'
+import {
+  createAuthContext,
+  requireAuth,
+  requireAdmin,
+  issueSessionToken,
+  setSessionCookie,
+  clearSessionCookie,
+  clearLoginFailures,
+  loginBlockedFor,
+  recordLoginFailure,
+  validateUsername,
+  validatePassword,
+  hashPassword,
+  verifyPassword,
+  type AuthContext
+} from './auth.js'
 
 const BOOT_TIME = Date.now()
 
@@ -24,6 +40,8 @@ export interface AppServices {
   runSyncFn?: (db: Db, kinds: Array<'m3u' | 'epg'>) => Promise<SyncSummary>
   testConnectionFn?: (base: string) => Promise<ConnectionTestResult>
   clock?: () => number
+  /** Test seam; production builds its own from the db + SESSION_SECRET env. */
+  auth?: AuthContext
 }
 
 async function defaultTestConnection(base: string): Promise<ConnectionTestResult> {
@@ -48,6 +66,9 @@ async function defaultTestConnection(base: string): Promise<ConnectionTestResult
 export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
   const app = express()
   app.disable('x-powered-by')
+  // Behind the reverse proxy (NPM) so req.secure/req.ip honor X-Forwarded-* — needed for
+  // Secure cookie decisions and per-IP login throttling.
+  app.set('trust proxy', true)
   app.use(express.json({ limit: '1mb' }))
 
   // Unauthenticated — this is what a deploy verification hits (same pattern the sibling
@@ -70,8 +91,144 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
     })
   })
 
-  // ---- M1 surfaces (registered only when a database is wired) ----
+  // ---- Authentication ----
+  // Public: health, version, config, login. Everything else below the gate requires a
+  // session — including the stream relay, which is the resource worth protecting on a
+  // public hostname.
   const { db } = services
+  if (db) {
+    const authCtx = services.auth ?? createAuthContext(db, process.env.SESSION_SECRET)
+
+    app.post('/api/auth/login', (req: Request, res: Response) => {
+      const ip = req.ip ?? 'unknown'
+      if (loginBlockedFor(ip)) {
+        res.status(429).json({ error: 'Too many failed attempts — try again in 15 minutes' })
+        return
+      }
+      const body = req.body as { username?: unknown; password?: unknown } | undefined
+      try {
+        const username = validateUsername(body?.username)
+        const password = validatePassword(body?.password)
+        const row = db.prepare('SELECT id, username, password_hash, is_admin FROM users WHERE username = ?').get(username) as
+          | { id: number; username: string; password_hash: string; is_admin: number }
+          | undefined
+        if (row === undefined || !verifyPassword(password, row.password_hash)) {
+          recordLoginFailure(ip)
+          res.status(401).json({ error: 'Invalid username or password' })
+          return
+        }
+        clearLoginFailures(ip)
+        setSessionCookie(res, req, issueSessionToken(authCtx.secret, row.id))
+        res.json({ ok: true, user: { id: row.id, username: row.username, isAdmin: row.is_admin === 1 } })
+      } catch (err) {
+        res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
+      }
+    })
+
+    app.use('/api', requireAuth(authCtx))
+
+    app.get('/api/auth/me', (req: Request, res: Response) => {
+      const user = (req as Request & { sessionUser?: { id: number; username: string; isAdmin: boolean } }).sessionUser
+      res.json({ user })
+    })
+
+    app.post('/api/auth/logout', (req: Request, res: Response) => {
+      clearSessionCookie(res, req)
+      res.json({ ok: true })
+    })
+
+    // Any signed-in user can change their own password (current one required).
+    app.put('/api/auth/password', (req: Request, res: Response) => {
+      const user = (req as Request & { sessionUser?: { id: number } }).sessionUser
+      const body = req.body as { currentPassword?: unknown; newPassword?: unknown } | undefined
+      const row = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(user?.id) as
+        | { password_hash: string }
+        | undefined
+      if (row === undefined || typeof body?.currentPassword !== 'string' || !verifyPassword(body.currentPassword, row.password_hash)) {
+        res.status(401).json({ error: 'Current password is incorrect' })
+        return
+      }
+      try {
+        const newPassword = validatePassword(body?.newPassword)
+        db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(newPassword), user?.id)
+        res.json({ ok: true })
+      } catch (err) {
+        res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
+      }
+    })
+
+    // ---- User management (admin) ----
+    app.get('/api/users', requireAdmin, (_req: Request, res: Response) => {
+      const rows = db.prepare('SELECT id, username, is_admin, created_at FROM users ORDER BY id').all() as Array<{
+        id: number
+        username: string
+        is_admin: number
+        created_at: string
+      }>
+      res.json({ users: rows.map((r) => ({ id: r.id, username: r.username, isAdmin: r.is_admin === 1, createdAt: r.created_at })) })
+    })
+
+    app.post('/api/users', requireAdmin, (req: Request, res: Response) => {
+      const body = req.body as { username?: unknown; password?: unknown; isAdmin?: unknown } | undefined
+      try {
+        const username = validateUsername(body?.username)
+        const password = validatePassword(body?.password)
+        const isAdmin = body?.isAdmin === true
+        const existing = db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)
+        if (existing !== undefined) {
+          res.status(409).json({ error: `User '${username}' already exists` })
+          return
+        }
+        const result = db
+          .prepare('INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)')
+          .run(username, hashPassword(password), isAdmin ? 1 : 0)
+        res.status(201).json({ ok: true, user: { id: Number(result.lastInsertRowid), username, isAdmin } })
+      } catch (err) {
+        res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
+      }
+    })
+
+    app.put('/api/users/:id/password', requireAdmin, (req: Request, res: Response) => {
+      try {
+        const password = validatePassword((req.body as { password?: unknown } | undefined)?.password)
+        const id = Number(req.params.id)
+        const existing = db.prepare('SELECT 1 FROM users WHERE id = ?').get(id)
+        if (existing === undefined) {
+          res.status(404).json({ error: 'User not found' })
+          return
+        }
+        db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(password), id)
+        res.json({ ok: true })
+      } catch (err) {
+        res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
+      }
+    })
+
+    app.delete('/api/users/:id', requireAdmin, (req: Request, res: Response) => {
+      const me = (req as Request & { sessionUser?: { id: number } }).sessionUser
+      const id = Number(req.params.id)
+      if (me?.id === id) {
+        res.status(400).json({ error: 'You cannot delete your own account' })
+        return
+      }
+      const existing = db.prepare('SELECT is_admin FROM users WHERE id = ?').get(id) as { is_admin: number } | undefined
+      if (existing === undefined) {
+        res.status(404).json({ error: 'User not found' })
+        return
+      }
+      if (existing.is_admin === 1) {
+        const admins = db.prepare('SELECT COUNT(*) AS n FROM users WHERE is_admin = 1').get() as { n: number }
+        if (admins.n <= 1) {
+          res.status(400).json({ error: 'Cannot delete the last admin' })
+          return
+        }
+      }
+      db.prepare('DELETE FROM users WHERE id = ?').run(id)
+      res.json({ ok: true })
+    })
+  }
+
+  // ---- M1/M2 surfaces (behind the auth gate above) ----
   if (db) {
     const clock = services.clock ?? (() => Date.now())
     const runSyncFn = services.runSyncFn ?? ((d: Db, kinds: Array<'m3u' | 'epg'>) => {

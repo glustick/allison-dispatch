@@ -124,11 +124,13 @@ describe('relayStream', () => {
   })
 })
 
-// Over the real HTTP app surface: play info + relay route + status codes.
+// Over the real HTTP app surface: play info + relay route + status codes. Behind the auth
+// gate since the accounts round — the suite seeds a user and attaches the session cookie.
 describe('M2 routes over HTTP', () => {
   let fake: FakeDispatcharr
   let db: Db
   let running: RunningApp
+  let cookie: string
 
   beforeEach(async () => {
     fake = await startFakeDispatcharr({ now: FAKE_NOW })
@@ -136,7 +138,9 @@ describe('M2 routes over HTTP', () => {
     await syncM3u({ db, dispatcharrUrl: fake.url })
     const { createApp } = await import('./app.js')
     const { loadConfig } = await import('./config.js')
+    const { seedAndLogin } = await import('./testing/testServer.js')
     running = await startHttpServer(createApp(loadConfig({}), { db }))
+    cookie = await seedAndLogin(db, running.url)
   })
 
   afterEach(async () => {
@@ -144,15 +148,21 @@ describe('M2 routes over HTTP', () => {
     await fake.close()
   })
 
+  function jfetch(path: string, init: RequestInit = {}): Promise<Response> {
+    const headers = new Headers(init.headers)
+    headers.set('cookie', cookie)
+    return fetch(`${running.url}${path}`, { ...init, headers })
+  }
+
   it('play info builds direct + relay URLs from the configured base', async () => {
     // No base configured yet → 400.
-    const none = await fetch(`${running.url}/api/channels/${DEFAULT_FAKE_CHANNELS[0].uuid}/play`)
+    const none = await jfetch(`/api/channels/${DEFAULT_FAKE_CHANNELS[0].uuid}/play`)
     expect(none.status).toBe(400)
 
     const { setDispatcharrUrl } = await import('./settingsStore.js')
     setDispatcharrUrl(db, fake.url)
 
-    const res = await fetch(`${running.url}/api/channels/${DEFAULT_FAKE_CHANNELS[0].uuid}/play?output_format=fmp4`)
+    const res = await jfetch(`/api/channels/${DEFAULT_FAKE_CHANNELS[0].uuid}/play?output_format=fmp4`)
     expect(res.status).toBe(200)
     const body = (await res.json()) as { direct: string; relay: string; format: string; name: string }
     expect(body.direct).toBe(`${fake.url}/proxy/ts/stream/${DEFAULT_FAKE_CHANNELS[0].uuid}?output_format=fmp4`)
@@ -163,19 +173,40 @@ describe('M2 routes over HTTP', () => {
   it('unknown channel on play info is a 404, bad format a 400', async () => {
     const { setDispatcharrUrl } = await import('./settingsStore.js')
     setDispatcharrUrl(db, fake.url)
-    const missing = await fetch(`${running.url}/api/channels/00000000-0000-4000-8000-000000000000/play`)
+    const missing = await jfetch('/api/channels/00000000-0000-4000-8000-000000000000/play')
     expect(missing.status).toBe(404)
-    const bad = await fetch(`${running.url}/api/channels/${DEFAULT_FAKE_CHANNELS[0].uuid}/play?output_format=hls`)
+    const bad = await jfetch(`/api/channels/${DEFAULT_FAKE_CHANNELS[0].uuid}/play?output_format=hls`)
     expect(bad.status).toBe(400)
   })
 
   it('relay route serves bytes end-to-end and 404s unknown channels', async () => {
     const { setDispatcharrUrl } = await import('./settingsStore.js')
     setDispatcharrUrl(db, fake.url)
-    const { text, status } = await readSomeBytes(`${running.url}/api/relay/stream/${DEFAULT_FAKE_CHANNELS[1].uuid}`, 2000)
+    const { text, status } = await readSomeBytesAuthenticated(`${running.url}/api/relay/stream/${DEFAULT_FAKE_CHANNELS[1].uuid}`, cookie, 2000)
     expect(status).toBe(200)
     expect(text.length).toBeGreaterThanOrEqual(2000)
-    const missing = await fetch(`${running.url}/api/relay/stream/00000000-0000-4000-8000-000000000000`)
+    const missing = await jfetch('/api/relay/stream/00000000-0000-4000-8000-000000000000')
     expect(missing.status).toBe(404)
   })
 })
+
+async function readSomeBytesAuthenticated(url: string, cookie: string, bytesWanted: number, timeoutMs = 5000): Promise<{ text: string; status: number; contentType: string | null }> {
+  const controller = new AbortController()
+  const bail = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(url, { signal: controller.signal, headers: { cookie } })
+    const reader = res.body?.getReader()
+    let text = ''
+    if (reader) {
+      while (text.length < bytesWanted) {
+        const { done, value } = await reader.read()
+        if (done) break
+        text += Buffer.from(value).toString('binary')
+      }
+      await reader.cancel()
+    }
+    return { text: text.slice(0, bytesWanted), status: res.status, contentType: res.headers.get('content-type') }
+  } finally {
+    clearTimeout(bail)
+  }
+}
