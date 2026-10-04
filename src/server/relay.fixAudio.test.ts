@@ -93,7 +93,10 @@ describe('audio-fix relay (real ffmpeg)', () => {
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
     const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/relay`
     try {
-      const out = await captureBytes(url, 6_000)
+      // Generous budget: ffmpeg's analysis of a piped live TS can take >6s to first byte on
+      // a busy CI runner (the same cold-start latency measured at ~8s against real
+      // Dispatcharr) — a tight window here fails with zero bytes, not a codec problem.
+      const out = await captureBytes(url, 15_000)
       expect(out.length).toBeGreaterThan(20_000) // real encoded bytes flowed
       const outFile = path.join(tmpdir(), `allison-dispatch-fixaudio-out-${Date.now()}.ts`)
       writeFileSync(outFile, out)
