@@ -60,6 +60,27 @@ const MIGRATIONS: string[] = [
     is_admin INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
   );
+  `,
+  // v3 — per-user favorites + watch history (the M4 round), and a not-before timestamp on
+  // users so a password change invalidates existing sessions (tokens carry their issue time;
+  // verify rejects tokens issued before the user's not-before).
+  `
+  ALTER TABLE users ADD COLUMN sessions_not_before_utc INTEGER NOT NULL DEFAULT 0;
+
+  CREATE TABLE IF NOT EXISTS favorites (
+    user_id INTEGER NOT NULL,
+    channel_uuid TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (user_id, channel_uuid)
+  );
+
+  CREATE TABLE IF NOT EXISTS watch_history (
+    user_id INTEGER NOT NULL,
+    channel_uuid TEXT NOT NULL,
+    watched_at_utc INTEGER NOT NULL,
+    PRIMARY KEY (user_id, channel_uuid)
+  );
+  CREATE INDEX IF NOT EXISTS idx_watch_history_recent ON watch_history (user_id, watched_at_utc DESC);
   `
 ]
 

@@ -301,6 +301,42 @@ button:disabled {
   color: #fbbf24;
 }
 
+.watch-channel-row {
+  display: grid;
+  grid-template-columns: 1fr 30px;
+  gap: 3px;
+  align-items: stretch;
+}
+
+.star-btn {
+  padding: 0;
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.star-on {
+  color: #fbbf24;
+}
+
+.watch-section-label {
+  display: block;
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0.35rem 0.15rem 0.2rem;
+}
+
+/* Nested section lists inherit the outer list's reset. */
+ul.watch-channel-list ul.watch-channel-list {
+  margin: 0;
+}
+
 .status-banner-error {
   color: var(--error);
 }

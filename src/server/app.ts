@@ -9,6 +9,7 @@ import { listChannels, nowNext, guideWindow, guideGrid, getSyncStates } from './
 import { getSetting, setDispatcharrUrl, clearDispatcharrUrl, resolveDispatcharrUrl, SETTING_KEYS } from './settingsStore.js'
 import { runSync, SyncFailure, type SyncSummary } from './sync.js'
 import { relayStream, buildStreamUrl, validateOutputFormat, parseFixAudio } from './relay.js'
+import { addFavorite, removeFavorite, listFavorites, listRecents, recordWatch } from './userData.js'
 import {
   createAuthContext,
   requireAuth,
@@ -96,6 +97,7 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
   // session — including the stream relay, which is the resource worth protecting on a
   // public hostname.
   const { db } = services
+  const clock = services.clock ?? (() => Date.now())
   if (db) {
     const authCtx = services.auth ?? createAuthContext(db, process.env.SESSION_SECRET)
 
@@ -137,7 +139,9 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
       res.json({ ok: true })
     })
 
-    // Any signed-in user can change their own password (current one required).
+    // Any signed-in user can change their own password (current one required). The change
+    // invalidates every OTHER session of this user (not-before bumps to now) and a fresh
+    // cookie is issued here, so the current session survives seamlessly.
     app.put('/api/auth/password', (req: Request, res: Response) => {
       const user = (req as Request & { sessionUser?: { id: number } }).sessionUser
       const body = req.body as { currentPassword?: unknown; newPassword?: unknown } | undefined
@@ -150,11 +154,46 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
       }
       try {
         const newPassword = validatePassword(body?.newPassword)
-        db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(newPassword), user?.id)
+        // Security boundaries run on the wall clock, not the (test-injectable) app clock —
+        // a frozen clock could never separate "before" from "after" a password change.
+        db.prepare('UPDATE users SET password_hash = ?, sessions_not_before_utc = ? WHERE id = ?').run(
+          hashPassword(newPassword),
+          Date.now(),
+          user?.id
+        )
+        setSessionCookie(res, req, issueSessionToken(authCtx.secret, user?.id ?? 0))
         res.json({ ok: true })
       } catch (err) {
         res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
       }
+    })
+
+    // ---- Per-user favorites and watch history ----
+    app.get('/api/favorites', (req: Request, res: Response) => {
+      const user = (req as Request & { sessionUser?: { id: number } }).sessionUser
+      res.json({ favorites: listFavorites(db, user?.id ?? 0) })
+    })
+
+    app.put('/api/favorites/:uuid', (req: Request, res: Response) => {
+      const user = (req as Request & { sessionUser?: { id: number } }).sessionUser
+      const known = db.prepare('SELECT 1 FROM channels WHERE uuid = ?').get(req.params.uuid)
+      if (!known) {
+        res.status(404).json({ error: 'channel not found' })
+        return
+      }
+      addFavorite(db, user?.id ?? 0, req.params.uuid)
+      res.json({ ok: true, favorite: true })
+    })
+
+    app.delete('/api/favorites/:uuid', (req: Request, res: Response) => {
+      const user = (req as Request & { sessionUser?: { id: number } }).sessionUser
+      removeFavorite(db, user?.id ?? 0, req.params.uuid)
+      res.json({ ok: true, favorite: false })
+    })
+
+    app.get('/api/history/recents', (req: Request, res: Response) => {
+      const user = (req as Request & { sessionUser?: { id: number } }).sessionUser
+      res.json({ recents: listRecents(db, user?.id ?? 0) })
     })
 
     // ---- User management (admin) ----
@@ -197,7 +236,11 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
           res.status(404).json({ error: 'User not found' })
           return
         }
-        db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(password), id)
+        db.prepare('UPDATE users SET password_hash = ?, sessions_not_before_utc = ? WHERE id = ?').run(
+          hashPassword(password),
+          Date.now(),
+          id
+        )
         res.json({ ok: true })
       } catch (err) {
         res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
@@ -230,11 +273,12 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
 
   // ---- M1/M2 surfaces (behind the auth gate above) ----
   if (db) {
-    const clock = services.clock ?? (() => Date.now())
     const runSyncFn = services.runSyncFn ?? ((d: Db, kinds: Array<'m3u' | 'epg'>) => {
       const base = resolveDispatcharrUrl(d, cfg.dispatcharrUrl)
       if (base === null) return Promise.reject(new SyncFailure('m3u', 'Dispatcharr URL is not configured'))
-      return runSync({ db: d, dispatcharrUrl: base }, kinds)
+      // Thread the app clock through: EPG retention must judge "old" against the same clock
+      // the tests inject, not the wall (a suite run days after fixture data would wipe it).
+      return runSync({ db: d, dispatcharrUrl: base, now: clock }, kinds)
     })
     const testConnectionFn = services.testConnectionFn ?? defaultTestConnection
 
@@ -334,7 +378,17 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
         return
       }
       const fixAudio = parseFixAudio(req.query.fixaudio)
-      relayStream({ db, dispatcharrUrl: base }, req.params.uuid, format, res, req, fixAudio).then((result) => {
+      const watcher = (req as Request & { sessionUser?: { id: number } }).sessionUser
+      relayStream(
+        // Wall clock for history: the ordering of "what did I watch last" must be real even
+        // in suites that freeze the app clock for guide data.
+        { db, dispatcharrUrl: base, onStreamStart: (uuid) => recordWatch(db, watcher?.id ?? 0, uuid, Date.now()) },
+        req.params.uuid,
+        format,
+        res,
+        req,
+        fixAudio
+      ).then((result) => {
         if (!result.ok) {
           // relayStream only fails before headers are written, so a JSON error is still valid.
           if (!res.headersSent) res.status(result.status).json({ error: result.error })

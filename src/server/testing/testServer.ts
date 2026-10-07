@@ -2,7 +2,6 @@ import { createServer, type Server } from 'http'
 import type { Express } from 'express'
 import { AddressInfo } from 'net'
 import type { Db } from '../db.js'
-import { ensureSeedUser } from '../auth.js'
 
 export interface RunningApp {
   url: string
@@ -29,11 +28,21 @@ export async function startHttpServer(app: Express): Promise<RunningApp> {
 }
 
 /**
- * Seeds a user into the app's db and returns a logged-in cookie header value. Suites that
- * exercise API surfaces behind the auth gate call this once in beforeEach.
+ * Ensures a specific user exists (upsert — unlike the product's only-when-empty seeding,
+ * tests need arbitrary accounts) and returns a logged-in cookie header value.
  */
-export async function seedAndLogin(db: Db, url: string, username = 'tester', password = 'tester123'): Promise<string> {
-  ensureSeedUser(db, username, password)
+export async function seedAndLogin(
+  db: Db,
+  url: string,
+  username = 'tester',
+  password = 'tester123',
+  isAdmin = false
+): Promise<string> {
+  const { hashPassword } = await import('../auth.js')
+  db.prepare(
+    `INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)
+     ON CONFLICT(username) DO UPDATE SET password_hash = excluded.password_hash, is_admin = excluded.is_admin`
+  ).run(username, hashPassword(password), isAdmin ? 1 : 0)
   const res = await fetch(`${url}/api/auth/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

@@ -81,24 +81,32 @@ function sign(secret: string, payload: string): string {
 }
 
 export function issueSessionToken(secret: string, userId: number, now = Date.now()): string {
-  const payload = `${userId}.${now + SESSION_TTL_MS}`
+  // Token format v2: `userId.iat.exp.signature` — iat is what password changes check against
+  // (sessions_not_before_utc). v1 (userId.exp) cookies die on upgrade: one re-login.
+  const payload = `${userId}.${now}.${now + SESSION_TTL_MS}`
   return `${payload}.${sign(secret, payload)}`
 }
 
-export function verifySessionToken(secret: string, token: string | undefined, now = Date.now()): number | null {
+export interface VerifiedToken {
+  userId: number
+  iat: number
+}
+
+export function verifySessionToken(secret: string, token: string | undefined, now = Date.now()): VerifiedToken | null {
   if (token === undefined) return null
   const parts = token.split('.')
-  if (parts.length !== 3) return null
-  const [userIdRaw, expRaw, signature] = parts
-  const payload = `${userIdRaw}.${expRaw}`
+  if (parts.length !== 4) return null
+  const [userIdRaw, iatRaw, expRaw, signature] = parts
+  const payload = `${userIdRaw}.${iatRaw}.${expRaw}`
   const expected = sign(secret, payload)
   const a = Buffer.from(signature)
   const b = Buffer.from(expected)
   if (a.length !== b.length || !timingSafeEqual(a, b)) return null
   const userId = Number(userIdRaw)
+  const iat = Number(iatRaw)
   const exp = Number(expRaw)
-  if (!Number.isInteger(userId) || !Number.isInteger(exp) || exp < now) return null
-  return userId
+  if (!Number.isInteger(userId) || !Number.isInteger(iat) || !Number.isInteger(exp) || exp < now || iat > now) return null
+  return { userId, iat }
 }
 
 // ---- cookies ----
@@ -167,12 +175,15 @@ export function createAuthContext(db: Db, envSecret?: string): AuthContext {
   return {
     secret,
     user(req: Request): SessionUser | null {
-      const userId = verifySessionToken(secret, parseCookies(req)[COOKIE_NAME])
-      if (userId === null) return null
-      const row = db.prepare('SELECT id, username, is_admin FROM users WHERE id = ?').get(userId) as
-        | Pick<UserRow, 'id' | 'username' | 'is_admin'>
-        | undefined
+      const verified = verifySessionToken(secret, parseCookies(req)[COOKIE_NAME])
+      if (verified === null) return null
+      const row = db
+        .prepare('SELECT id, username, is_admin, sessions_not_before_utc FROM users WHERE id = ?')
+        .get(verified.userId) as Pick<UserRow, 'id' | 'username' | 'is_admin'> & { sessions_not_before_utc: number } | undefined
       if (row === undefined) return null
+      // Password changes bump sessions_not_before_utc; tokens issued before that instant
+      // are dead even though their signature is still valid.
+      if (verified.iat < row.sessions_not_before_utc) return null
       return { id: row.id, username: row.username, isAdmin: row.is_admin === 1 }
     }
   }

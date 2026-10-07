@@ -35,7 +35,7 @@ describe('password hashing and session tokens (pure)', () => {
   it('round-trips session tokens and rejects tampering/expiry', () => {
     const secret = '0123456789abcdef0123456789abcdef'
     const token = issueSessionToken(secret, 7, 1_000_000)
-    expect(verifySessionToken(secret, token, 1_000_001)).toBe(7)
+    expect(verifySessionToken(secret, token, 1_000_001)).toEqual({ userId: 7, iat: 1_000_000 })
     expect(verifySessionToken('other secret same length xxx', token, 1_000_001)).toBeNull()
     expect(verifySessionToken(secret, `${token}x`, 1_000_001)).toBeNull()
     // Issued at t=0 with the 7-day TTL; verifying AFTER that window must fail.
@@ -149,6 +149,30 @@ describe('auth over HTTP', () => {
     expect(other.status).toBe(200)
   })
 
+  it('own-password change invalidates other sessions but keeps the current one', async () => {
+    const firstCookie = cookieFrom(await login('chris', 'hunter22'))
+    const secondRes = await login('chris', 'hunter22')
+    const secondCookie = cookieFrom(secondRes)
+
+    const change = await fetch(`${running.url}/api/auth/password`, {
+      method: 'PUT',
+      headers: { cookie: secondCookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ currentPassword: 'hunter22', newPassword: 'rotated-77' })
+    })
+    expect(change.status).toBe(200)
+
+    // The session that made the change is dead too — but the response re-issued a fresh one.
+    const reissueCookie = cookieFrom(change)
+    const oldMe = await fetch(`${running.url}/api/auth/me`, { headers: { cookie: firstCookie } })
+    expect(oldMe.status).toBe(401)
+    const newMe = await fetch(`${running.url}/api/auth/me`, { headers: { cookie: reissueCookie } })
+    expect(newMe.status).toBe(200)
+
+    // Old password no longer logs in; the new one does.
+    expect((await login('chris', 'hunter22')).status).toBe(401)
+    expect((await login('chris', 'rotated-77')).status).toBe(200)
+  })
+
   it('logout clears the session', async () => {
     const cookie = cookieFrom(await login('chris', 'hunter22'))
     const out = await fetch(`${running.url}/api/auth/logout`, { method: 'POST', headers: { cookie } })
@@ -238,16 +262,29 @@ describe('user management over HTTP', () => {
     expect(badname.status).toBe(400)
   })
 
-  it('admin resets a password; the old one stops working', async () => {
+  it('admin resets a password; the old one stops working and target sessions die', async () => {
     const viewerId = ((await (await fetch(`${running.url}/api/users`, { headers: { cookie: adminCookie } })).json()) as {
       users: Array<{ id: number; username: string }>
     }).users.find((u) => u.username === 'viewer')?.id
+    // A live viewer session before the reset...
+    const viewerSession = cookieFrom(await (async () => fetch(`${running.url}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'viewer', password: 'viewer123' })
+    }))())
+    const meBefore = await fetch(`${running.url}/api/auth/me`, { headers: { cookie: viewerSession } })
+    expect(meBefore.status).toBe(200)
+
     const reset = await fetch(`${running.url}/api/users/${viewerId}/password`, {
       method: 'PUT',
       headers: { cookie: adminCookie, 'content-type': 'application/json' },
       body: JSON.stringify({ password: 'brand-new-9' })
     })
     expect(reset.status).toBe(200)
+    // ...is dead after it (password changes invalidate that user's sessions).
+    const meAfter = await fetch(`${running.url}/api/auth/me`, { headers: { cookie: viewerSession } })
+    expect(meAfter.status).toBe(401)
+
     const oldLogin = await fetch(`${running.url}/api/auth/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

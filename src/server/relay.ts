@@ -32,6 +32,8 @@ export interface RelayDeps {
   connectTimeoutMs?: number
   /** Test seam: observe the spawned ffmpeg process (e.g. to await its exit). */
   onFfmpegSpawn?: (proc: ChildProcess) => void
+  /** Called once when a stream actually starts (upstream accepted) — the hook that records watch history. */
+  onStreamStart?: (uuid: string) => void
 }
 
 export type RelayResult =
@@ -132,6 +134,7 @@ export async function relayStream(deps: RelayDeps, uuid: string, format: 'mpegts
     void upstream.body?.cancel()
     return { ok: false, status: 502, error: `Dispatcharr answered ${upstream.status} for the stream` }
   }
+  deps.onStreamStart?.(uuid)
 
   // Spawn ffmpeg BEFORE the headers go out, so a spawn failure can still answer 502 JSON.
   let ff: ChildProcess | null = null

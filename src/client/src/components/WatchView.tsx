@@ -52,6 +52,7 @@ export default function WatchView(): React.JSX.Element {
   const [status, setStatus] = useState<StatusState>({ kind: 'idle', message: null })
   const [nowNext, setNowNext] = useState<NowNextPayload | null>(null)
   const [codecNote, setCodecNote] = useState<string | null>(null)
+  const [autoplayBlocked, setAutoplayBlocked] = useState(false)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const attemptsRef = useRef(0)
   // The reload budget survives effect re-runs but not channel changes; a ref read inside
@@ -84,6 +85,47 @@ export default function WatchView(): React.JSX.Element {
       cancelled = true
     }
   }, [])
+
+  // ---- Favorites + recents (per-user, server-side) ----
+  const [favorites, setFavorites] = useState<Set<string>>(new Set())
+  const [recents, setRecents] = useState<Channel[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const [favs, hist] = await Promise.all([
+          getJson<{ favorites: Channel[] }>('/api/favorites'),
+          getJson<{ recents: Channel[] }>('/api/history/recents')
+        ])
+        if (cancelled) return
+        setFavorites(new Set(favs.favorites.map((c) => c.uuid)))
+        setRecents(hist.recents)
+        // Resume: tune the last-watched channel automatically, like switching a TV back on.
+        if (hist.recents.length > 0) setSelected(hist.recents[0])
+      } catch {
+        // Favorites/resume are enhancements — a failure here shouldn't blank the app.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  async function toggleFavorite(channel: Channel): Promise<void> {
+    const wasFavorite = favorites.has(channel.uuid)
+    const next = new Set(favorites)
+    if (wasFavorite) next.delete(channel.uuid)
+    else next.add(channel.uuid)
+    setFavorites(next) // optimistic; revert if the server disagrees
+    try {
+      await fetch(`/api/favorites/${encodeURIComponent(channel.uuid)}`, {
+        method: wasFavorite ? 'DELETE' : 'PUT'
+      })
+    } catch {
+      setFavorites(favorites)
+    }
+  }
 
   // Now/next for the selected channel.
   useEffect(() => {
@@ -122,7 +164,10 @@ export default function WatchView(): React.JSX.Element {
     const monitor = new LivePlaybackMonitor({ now: () => Date.now() })
 
     const onPlaying = (): void => {
-      if (!disposed) setStatus({ kind: 'playing', message: null })
+      if (!disposed) {
+        setStatus({ kind: 'playing', message: null })
+        setAutoplayBlocked(false)
+      }
     }
     video.addEventListener('playing', onPlaying)
 
@@ -165,7 +210,9 @@ export default function WatchView(): React.JSX.Element {
         player.attachMediaElement(video)
         player.load()
         void video.play().catch(() => {
-          // Autoplay policy blocked us — the user can press play on the controls.
+          // Autoplay with sound needs a user gesture — resumed sessions on a fresh page load
+          // often hit this. Say so instead of looking broken.
+          if (!disposed) setAutoplayBlocked(true)
         })
         pollTimer = window.setInterval(() => {
           const state = monitor.sample({
@@ -223,16 +270,38 @@ export default function WatchView(): React.JSX.Element {
     const set = new Set<string>()
     for (const ch of channels ?? []) if (ch.group_name !== null) set.add(ch.group_name)
     return ['all', ...Array.from(set).sort((a, b) => a.localeCompare(b))]
-  }, [channels])
+  }, [channels, favorites])
 
-  const visible = useMemo(() => {
-    const needle = search.trim().toLowerCase()
-    return (channels ?? []).filter((ch) => {
-      if (group !== 'all' && ch.group_name !== group) return false
-      if (needle !== '' && !ch.name.toLowerCase().includes(needle)) return false
-      return true
-    })
-  }, [channels, group, search])
+  const filtering = search.trim() !== '' || group !== 'all'
+  const byUuid = useMemo(() => new Map((channels ?? []).map((c) => [c.uuid, c])), [channels])
+
+  // Sidebar sections: ★ favorites pinned, then recently watched, then the rest — only when
+  // not filtering; a filter shows one flat matching list.
+  const sections = useMemo(() => {
+    const all = channels ?? []
+    if (filtering) {
+      const needle = search.trim().toLowerCase()
+      return [
+        {
+          label: null,
+          items: all.filter((ch) => {
+            if (group !== 'all' && ch.group_name !== group) return false
+            return needle === '' || ch.name.toLowerCase().includes(needle)
+          })
+        }
+      ]
+    }
+    const favItems = all.filter((ch) => favorites.has(ch.uuid))
+    const recentItems = recents
+      .map((r) => byUuid.get(r.uuid))
+      .filter((ch): ch is Channel => ch !== undefined && !favorites.has(ch.uuid))
+    const rest = all.filter((ch) => !favorites.has(ch.uuid) && !recentItems.some((r) => r.uuid === ch.uuid))
+    const out: Array<{ label: string | null; items: Channel[] }> = []
+    if (favItems.length > 0) out.push({ label: '★ Favorites', items: favItems })
+    if (recentItems.length > 0) out.push({ label: 'Recent', items: recentItems })
+    out.push({ label: favItems.length > 0 || recentItems.length > 0 ? 'All channels' : null, items: rest })
+    return out
+  }, [channels, favorites, recents, filtering, search, group, byUuid])
 
   return (
     <section className="view">
@@ -252,25 +321,38 @@ export default function WatchView(): React.JSX.Element {
             ))}
           </select>
           <ul className="watch-channel-list">
-            {visible.map((ch) => (
-              <li key={ch.uuid}>
-                <button
-                  type="button"
-                  className={selected?.uuid === ch.uuid ? 'watch-channel watch-channel-active' : 'watch-channel'}
-                  onClick={() => tune(ch)}
-                >
-                  <span className="channel-number">{ch.channel_number ?? ''}</span>
-                  <span className="channel-name">{ch.name}</span>
-                </button>
+            {sections.map((section) => (
+              <li key={section.label ?? 'all'} className="watch-section">
+                {section.label !== null && <span className="watch-section-label">{section.label}</span>}
+                <ul className="watch-channel-list">
+                  {section.items.map((ch) => (
+                    <li key={ch.uuid} className="watch-channel-row">
+                      <button
+                        type="button"
+                        className={selected?.uuid === ch.uuid ? 'watch-channel watch-channel-active' : 'watch-channel'}
+                        onClick={() => tune(ch)}
+                      >
+                        <span className="channel-number">{ch.channel_number ?? ''}</span>
+                        <span className="channel-name">{ch.name}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={favorites.has(ch.uuid) ? 'star-btn star-on' : 'star-btn'}
+                        title={favorites.has(ch.uuid) ? 'Remove from favorites' : 'Add to favorites'}
+                        aria-label={favorites.has(ch.uuid) ? 'Remove from favorites' : 'Add to favorites'}
+                        onClick={() => void toggleFavorite(ch)}
+                      >
+                        {favorites.has(ch.uuid) ? '★' : '☆'}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
               </li>
             ))}
             {channels !== null && channels.length === 0 && (
               <li className="muted-note">No channels — sync first in Settings.</li>
             )}
           </ul>
-          {channels !== null && visible.length !== channels.length && (
-            <p className="muted-note">Showing {visible.length} of {channels.length}</p>
-          )}
         </aside>
 
         <div
@@ -335,6 +417,9 @@ export default function WatchView(): React.JSX.Element {
           )}
           {status.kind === 'failed' && <p className="status-banner status-banner-error">{status.message}</p>}
           {status.kind === 'connecting' && <p className="status-banner">Connecting…</p>}
+          {autoplayBlocked && status.kind !== 'playing' && (
+            <p className="status-banner status-banner-warn">Press ▶ to start — the browser blocked autoplay with sound.</p>
+          )}
           {status.kind === 'playing' && <p className="status-banner status-banner-ok">Playing live.</p>}
           {codecNote !== null && selected !== null && <p className="muted-note">Codecs: {codecNote}</p>}
 

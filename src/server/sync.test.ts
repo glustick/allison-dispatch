@@ -57,7 +57,7 @@ describe('sync against the wire-level fake', () => {
 
   it('syncEpg streams the guide into programmes reachable via now/next queries', async () => {
     await syncM3u({ db, dispatcharrUrl: fake.url })
-    const summary = await syncEpg({ db, dispatcharrUrl: fake.url })
+    const summary = await syncEpg({ db, dispatcharrUrl: fake.url, now: () => FAKE_NOW.getTime() })
     expect(summary?.programmes).toBe(24) // 6 channels × 4 slots
     expect(summary?.channels).toBe(6)
 
@@ -81,7 +81,7 @@ describe('sync against the wire-level fake', () => {
 
   it('runSync fills sync_state bookkeeping for both kinds', async () => {
     await syncM3u({ db, dispatcharrUrl: fake.url })
-    await syncEpg({ db, dispatcharrUrl: fake.url })
+    await syncEpg({ db, dispatcharrUrl: fake.url, now: () => FAKE_NOW.getTime() })
     const states = getSyncStates(db)
     expect(states.m3u).toMatchObject({ status: 'ok', item_count: 6, error: null })
     expect(states.epg).toMatchObject({ status: 'ok', item_count: 24, error: null })
@@ -121,7 +121,7 @@ describe('sync failure paths', () => {
   it('runSync runs m3u before epg and surfaces both summaries', async () => {
     const fake = await startFakeDispatcharr({ now: FAKE_NOW })
     try {
-      const summary = await runSync({ db, dispatcharrUrl: fake.url })
+      const summary = await runSync({ db, dispatcharrUrl: fake.url, now: () => FAKE_NOW.getTime() })
       expect(summary.m3u).toEqual({ channels: 6, skipped: 0 })
       expect(summary.epg).toEqual({ programmes: 24, channels: 6 })
     } finally {
