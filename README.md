@@ -79,6 +79,8 @@ npm run build && npm run build:client   # server → dist/, client → public/
 | `DATA_DIR` | `./data` | SQLite database and sync state |
 | `PUBLIC_DIR` | `./public` | Built client assets served with SPA fallback |
 | `DISPATCHARR_URL` | — | Base URL of the Dispatcharr instance (e.g. `http://192.168.0.20:9191`). Required from M1 (sync) onward; validated at boot when set. |
+| `RELAY_MAX_STREAMS` | `3` | Cap on concurrent relayed streams — each holds a provider session (and, with the audio fix, an ffmpeg) on the host. Past the cap the relay answers 429. `0` disables the cap. |
+| `BACKUP_KEEP` | `7` | Daily gzipped snapshots of the SQLite db, kept in `<DATA_DIR>/backups` (one at boot, then every 24h; older ones pruned). |
 
 Dispatcharr side prerequisites: its `M3U_EPG` network-ACL scope must include this app's
 source IP (the default localhost + LAN CIDRs already cover a LAN deployment), and nothing

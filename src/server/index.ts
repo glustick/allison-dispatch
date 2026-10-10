@@ -5,6 +5,8 @@ import { openDb } from './db.js'
 import { resolveDispatcharrUrl } from './settingsStore.js'
 import { runSync, SyncFailure } from './sync.js'
 import { ensureSeedUser, validatePassword, validateUsername } from './auth.js'
+import { startBackupLoop } from './backup.js'
+import path from 'path'
 
 const cfg = loadConfig(process.env)
 const db = openDb(cfg.dataDir)
@@ -67,3 +69,9 @@ const initial = setTimeout(() => scheduledSync(['m3u', 'epg'])(), BOOT_DELAY_MS)
 initial.unref()
 schedule(scheduledSync(['m3u']), M3U_INTERVAL_MS)
 schedule(scheduledSync(['epg']), EPG_INTERVAL_MS)
+
+// ---- Daily db backup ----
+// One gzipped snapshot at boot and one per day after, pruned to the newest BACKUP_KEEP.
+// The db is the only state that survives redeploys — losing it means re-seeding users and
+// losing every favorite and the watch history.
+startBackupLoop(db, path.join(cfg.dataDir, 'backups'), cfg.backupKeep)

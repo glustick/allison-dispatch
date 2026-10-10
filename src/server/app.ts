@@ -71,6 +71,11 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
   // Secure cookie decisions and per-IP login throttling.
   app.set('trust proxy', true)
   app.use(express.json({ limit: '1mb' }))
+  // Live count of relayed streams served by THIS app instance. Each one holds an upstream
+  // provider session open and — in fix-audio mode — a running ffmpeg; without a cap a few
+  // forgotten tabs can fork the host into CPU oblivion. The route answers 429 past the cap
+  // (0 disables it — operator escape hatch).
+  let activeRelays = 0
 
   // Unauthenticated — this is what a deploy verification hits (same pattern the sibling
   // uses on the NAS via Dockhand).
@@ -402,6 +407,11 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
       }
       const fixAudio = parseFixAudio(req.query.fixaudio)
       const watcher = (req as Request & { sessionUser?: { id: number } }).sessionUser
+      if (cfg.relayMaxStreams > 0 && activeRelays >= cfg.relayMaxStreams) {
+        res.status(429).json({ error: `Too many active streams (limit ${cfg.relayMaxStreams}) — stop one and try again` })
+        return
+      }
+      activeRelays++
       relayStream(
         // Wall clock for history: the ordering of "what did I watch last" must be real even
         // in suites that freeze the app clock for guide data.
@@ -421,6 +431,10 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
       }).catch(() => {
         if (!res.headersSent) res.status(502).json({ error: 'relay failed' })
         else res.destroy()
+      }).finally(() => {
+        // relayStream settles when the stream ends: upstream done, client gone, or the
+        // pre-header failure paths — every exit releases its slot.
+        activeRelays--
       })
     })
 

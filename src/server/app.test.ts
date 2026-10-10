@@ -13,6 +13,17 @@ describe('loadConfig', () => {
     expect(cfg.port).toBe(8086)
     expect(cfg.publicDir).not.toBe('')
     expect(cfg.dispatcharrUrl).toBeNull()
+    expect(cfg.relayMaxStreams).toBe(3)
+    expect(cfg.backupKeep).toBe(7)
+  })
+
+  it('parses RELAY_MAX_STREAMS (0 = unlimited) and BACKUP_KEEP strictly', () => {
+    expect(loadConfig({ RELAY_MAX_STREAMS: '5' }).relayMaxStreams).toBe(5)
+    expect(loadConfig({ RELAY_MAX_STREAMS: '0' }).relayMaxStreams).toBe(0)
+    expect(() => loadConfig({ RELAY_MAX_STREAMS: '-1' })).toThrow(/RELAY_MAX_STREAMS/)
+    expect(() => loadConfig({ RELAY_MAX_STREAMS: 'two' })).toThrow(/RELAY_MAX_STREAMS/)
+    expect(loadConfig({ BACKUP_KEEP: '14' }).backupKeep).toBe(14)
+    expect(() => loadConfig({ BACKUP_KEEP: '0' })).toThrow(/BACKUP_KEEP/)
   })
 
   it('normalizes DISPATCHARR_URL to scheme://host:port with no trailing slash or path', () => {

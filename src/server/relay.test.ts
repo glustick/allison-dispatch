@@ -241,6 +241,62 @@ describe('M2 routes over HTTP', () => {
   })
 })
 
+// The concurrency cap: one live relay holds the slot; the next client gets 429 until it ends.
+describe('relay concurrency cap', () => {
+  let fake: FakeDispatcharr
+  let db: Db
+  let running: RunningApp
+  let cookie: string
+
+  beforeEach(async () => {
+    fake = await startFakeDispatcharr({ now: FAKE_NOW })
+    db = openDb(':memory:')
+    await syncM3u({ db, dispatcharrUrl: fake.url })
+    const { createApp } = await import('./app.js')
+    const { loadConfig } = await import('./config.js')
+    const { seedAndLogin } = await import('./testing/testServer.js')
+    running = await startHttpServer(createApp(loadConfig({ RELAY_MAX_STREAMS: '1' }), { db }))
+    cookie = await seedAndLogin(db, running.url)
+  })
+
+  afterEach(async () => {
+    await running.close()
+    await fake.close()
+  })
+
+  it('answers 429 while a stream is live and frees the slot when it ends', async () => {
+    const { setDispatcharrUrl } = await import('./settingsStore.js')
+    setDispatcharrUrl(db, fake.url)
+    const url = `${running.url}/api/relay/stream/${DEFAULT_FAKE_CHANNELS[0].uuid}`
+
+    // Hold one relay open (never read to completion — it stays active until aborted).
+    const holder = new AbortController()
+    const live = await fetch(url, { signal: holder.signal, headers: { cookie } })
+    expect(live.status).toBe(200)
+
+    const rejected = await fetch(url, { headers: { cookie } })
+    expect(rejected.status).toBe(429)
+    const body = (await rejected.json()) as { error: string }
+    expect(body.error).toMatch(/Too many active streams/)
+    await live.body?.cancel()
+
+    // Slot released once the first stream's promise settles — poll briefly rather than
+    // guessing the teardown timing.
+    let freed = false
+    for (let i = 0; i < 20 && !freed; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      const probe = await fetch(url, { headers: { cookie } })
+      if (probe.status === 200) {
+        freed = true
+        await probe.body?.cancel()
+      } else {
+        await probe.body?.cancel()
+      }
+    }
+    expect(freed).toBe(true)
+  })
+})
+
 async function readSomeBytesAuthenticated(url: string, cookie: string, bytesWanted: number, timeoutMs = 5000): Promise<{ text: string; status: number; contentType: string | null }> {
   const controller = new AbortController()
   const bail = setTimeout(() => controller.abort(), timeoutMs)
