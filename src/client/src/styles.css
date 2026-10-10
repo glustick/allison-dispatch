@@ -337,6 +337,66 @@ ul.watch-channel-list ul.watch-channel-list {
   margin: 0;
 }
 
+/* Programme search hits in the sidebar — same row grammar as channels, with a time chip
+   where the channel number sits. */
+.watch-programme-hit {
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  width: 100%;
+  text-align: left;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 0.4rem 0.6rem;
+  margin: 0;
+}
+
+.programme-hit-time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8rem;
+  padding-top: 0.1rem;
+}
+
+.programme-hit-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.programme-hit-title,
+.programme-hit-channel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.programme-hit-channel {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+/* Number-entry OSD: anchors to the video frame while digits are being punched in. */
+.video-frame {
+  position: relative;
+}
+
+.zap-osd {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 5;
+  font-size: 2rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  border-radius: 10px;
+  padding: 0.4rem 0.9rem;
+  pointer-events: none;
+}
+
 .status-banner-error {
   color: var(--error);
 }

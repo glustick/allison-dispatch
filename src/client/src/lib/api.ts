@@ -13,6 +13,26 @@ export interface ChannelsResponse {
   channels: Channel[]
 }
 
+// A guide-search hit: programme fields plus the broadcasting channel's identity, so the UI
+// can tune straight from a hit (uuid) and label it (name/number) without a second fetch.
+export interface ProgrammeHit {
+  uuid: string
+  name: string
+  channel_number: number | null
+  logo_url: string | null
+  group_name: string | null
+  title: string
+  description: string | null
+  category: string | null
+  start_utc: number
+  stop_utc: number
+}
+
+export interface ProgrammeSearchResponse {
+  count: number
+  programmes: ProgrammeHit[]
+}
+
 export interface SyncKindState {
   kind: string
   last_run_utc: number | null

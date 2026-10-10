@@ -5,7 +5,7 @@ import type { Db } from './db.js'
 import type { AppConfig } from './config.js'
 import { normalizeDispatcharrUrl } from './config.js'
 import { readAppVersion } from './version.js'
-import { listChannels, nowNext, guideWindow, guideGrid, getSyncStates } from './queries.js'
+import { listChannels, nowNext, guideWindow, guideGrid, searchProgrammes, getSyncStates } from './queries.js'
 import { getSetting, setDispatcharrUrl, clearDispatcharrUrl, resolveDispatcharrUrl, SETTING_KEYS } from './settingsStore.js'
 import { runSync, SyncFailure, type SyncSummary } from './sync.js'
 import { relayStream, buildStreamUrl, validateOutputFormat, parseFixAudio } from './relay.js'
@@ -324,6 +324,20 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
       }
       const channels = guideGrid(db, start, end)
       res.json({ count: channels.length, window: { start, end }, channels })
+    })
+
+    // Programme search across the guide (M4): on-air/upcoming only, capped result count so a
+    // one-letter query can't flood the response.
+    app.get('/api/epg/search', (req: Request, res: Response) => {
+      const q = typeof req.query.q === 'string' ? req.query.q.trim() : ''
+      if (q === '') {
+        res.status(400).json({ error: 'q query parameter is required' })
+        return
+      }
+      const limitRaw = Number(req.query.limit)
+      const limit = Number.isFinite(limitRaw) && limitRaw >= 1 ? Math.min(Math.floor(limitRaw), 500) : 100
+      const programmes = searchProgrammes(db, q, clock(), limit)
+      res.json({ count: programmes.length, programmes })
     })
 
     app.get('/api/sync/status', (_req: Request, res: Response) => {

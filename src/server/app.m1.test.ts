@@ -201,6 +201,80 @@ describe('M1 API surfaces', () => {
     expect(tooWide.status).toBe(400)
   })
 
+  describe('programme search (GET /api/epg/search)', () => {
+    const NOW_MS = FAKE_NOW.getTime() + 10 * 60 * 1000 // the app clock used in beforeEach
+
+    async function syncGuide(): Promise<void> {
+      await putUrl(fake.url)
+      const res = await jfetch('/api/sync/run', { method: 'POST' })
+      expect(res.status).toBe(200)
+    }
+
+    beforeEach(syncGuide)
+
+    it('finds on-air and upcoming titles, joined with their channels, chronologically', async () => {
+      const res = await jfetch('/api/epg/search?q=Slot%201')
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as {
+        count: number
+        programmes: Array<{
+          uuid: string
+          name: string
+          channel_number: number | null
+          title: string
+          start_utc: number
+          stop_utc: number
+        }>
+      }
+      // One live "Slot 1" per channel, all still on air at clock = now+10min.
+      expect(body.count).toBe(6)
+      const first = body.programmes[0]
+      expect(first.uuid).toBe(DEFAULT_FAKE_CHANNELS[0].uuid)
+      expect(first.name).toBe('ACME News HD')
+      expect(first.channel_number).toBe(101)
+      expect(first.title).toBe('ACME News HD — Slot 1')
+      const starts = body.programmes.map((p) => p.start_utc)
+      expect([...starts].sort((a, b) => a - b)).toEqual(starts)
+    })
+
+    it('matches descriptions too and excludes past programmes', async () => {
+      // A programme that already ended: must never surface, whatever the query.
+      db.prepare(
+        `INSERT INTO epg_programs (channel_id, title, description, category, start_utc, stop_utc)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(101, 'Ancient History', 'A long-concluded broadcast.', 'News', FAKE_NOW.getTime() - 3 * HOUR, FAKE_NOW.getTime() - 2 * HOUR)
+
+      const desc = await jfetch('/api/epg/search?q=synthetic')
+      const descBody = (await desc.json()) as { count: number }
+      // Every fixture programme's description — except Slot 0 (8:30–10:30), which ended
+      // before the app clock (12:10) and is correctly excluded as past.
+      expect(descBody.count).toBe(18)
+
+      const past = await jfetch('/api/epg/search?q=Ancient')
+      const pastBody = (await past.json()) as { count: number }
+      expect(pastBody.count).toBe(0)
+    })
+
+    it('escapes LIKE metacharacters — a bare % matches nothing, not everything', async () => {
+      const res = await jfetch('/api/epg/search?q=%25')
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { count: number }
+      expect(body.count).toBe(0)
+    })
+
+    it('caps results with limit and requires a non-empty q', async () => {
+      const capped = await jfetch('/api/epg/search?q=Slot&limit=3')
+      const cappedBody = (await capped.json()) as { count: number; programmes: unknown[] }
+      expect(cappedBody.count).toBe(3)
+      expect(cappedBody.programmes).toHaveLength(3)
+
+      const missing = await jfetch('/api/epg/search')
+      expect(missing.status).toBe(400)
+      const blank = await jfetch('/api/epg/search?q=%20%20')
+      expect(blank.status).toBe(400)
+    })
+  })
+
   it('unknown channel uuid on now-next is a 404', async () => {
     await putUrl(fake.url)
     await jfetch('/api/sync/run', { method: 'POST' })

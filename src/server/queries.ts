@@ -140,6 +140,33 @@ export function guideGrid(db: Db, startMs: number, endMs: number): GuideGridChan
   return out
 }
 
+export interface ProgrammeHit extends ProgrammeRow {
+  uuid: string
+  name: string
+  channel_number: number | null
+  logo_url: string | null
+  group_name: string | null
+}
+
+// Programme search across the synced guide (M4): on-air or upcoming only — past programmes
+// are noise. LIKE metacharacters in the needle are escaped so a literal "%", "_" or "\" in a
+// title matches itself. Chronological, then channel order, so "what's on tonight matching X"
+// reads top-down like a schedule.
+export function searchProgrammes(db: Db, rawQuery: string, nowMs: number, limit: number): ProgrammeHit[] {
+  const needle = `%${rawQuery.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`
+  return db
+    .prepare(
+      `SELECT p.channel_id, p.title, p.description, p.category, p.start_utc, p.stop_utc,
+              c.uuid, c.name, c.channel_number, c.logo_url, c.group_name
+       FROM epg_programs p
+       JOIN channels c ON c.tvg_id = p.channel_id
+       WHERE (p.title LIKE ? ESCAPE '\\' OR p.description LIKE ? ESCAPE '\\') AND p.stop_utc > ?
+       ORDER BY p.start_utc, c.channel_number IS NULL, c.channel_number, c.name
+       LIMIT ?`
+    )
+    .all(needle, needle, nowMs, limit) as ProgrammeHit[]
+}
+
 export interface SyncStateRow {
   kind: string
   last_run_utc: number | null

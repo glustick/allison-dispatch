@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import mpegts from 'mpegts.js'
-import { getJson, type Channel, type ChannelsResponse } from '../lib/api.js'
+import { getJson, type Channel, type ChannelsResponse, type ProgrammeHit, type ProgrammeSearchResponse } from '../lib/api.js'
+import { appendDigit, resolveNumberExact, resolveNumberImmediate, zapStep } from '../lib/zapping.js'
 import GuideView from './GuideView.js'
 import {
   buildPlaybackUrl,
@@ -151,6 +152,30 @@ export default function WatchView(): React.JSX.Element {
     }
   }, [selected])
 
+  // ---- Programme search: the sidebar needle searches the guide too (debounced) ----
+  const [programmeHits, setProgrammeHits] = useState<ProgrammeHit[] | null>(null)
+  const needle = search.trim()
+  useEffect(() => {
+    if (needle === '') {
+      setProgrammeHits(null)
+      return
+    }
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      getJson<ProgrammeSearchResponse>(`/api/epg/search?q=${encodeURIComponent(needle)}&limit=50`)
+        .then((body) => {
+          if (!cancelled) setProgrammeHits(body.programmes)
+        })
+        .catch(() => {
+          if (!cancelled) setProgrammeHits(null)
+        })
+    }, 250)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [needle])
+
   // Player lifecycle — re-runs on channel change, pref change, or restart (gen bump).
   useEffect(() => {
     const video = videoRef.current
@@ -266,6 +291,63 @@ export default function WatchView(): React.JSX.Element {
     setSelected((prev) => (prev?.uuid === channel.uuid ? prev : channel))
   }
 
+  // ---- Keyboard zapping (TV style): ↑/↓ ±1, PgUp/PgDn ±5, digits = number entry with a
+  // 2s commit timeout. Skipped while typing in a field, while the video element (its own
+  // controls use arrows) has focus, and for modifier chords. ----
+  const [digitBuffer, setDigitBuffer] = useState<string | null>(null)
+  const digitsRef = useRef('')
+  const digitTimerRef = useRef<number | null>(null)
+  const commitDigits = useCallback((channel: Channel | null): void => {
+    digitsRef.current = ''
+    setDigitBuffer(null)
+    if (digitTimerRef.current !== null) {
+      window.clearTimeout(digitTimerRef.current)
+      digitTimerRef.current = null
+    }
+    if (channel !== null) setSelected((prev) => (prev?.uuid === channel.uuid ? prev : channel))
+  }, [])
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.ctrlKey || event.metaKey || event.altKey) return
+      const target = event.target as HTMLElement | null
+      if (
+        target !== null &&
+        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable || target.tagName === 'VIDEO')
+      ) {
+        return
+      }
+      const lineup = channels ?? []
+      if (event.key === 'ArrowUp' || event.key === 'ArrowDown' || event.key === 'PageUp' || event.key === 'PageDown') {
+        event.preventDefault()
+        const delta = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : event.key === 'PageUp' ? -5 : 5
+        const next = zapStep(lineup, selected?.uuid ?? null, delta)
+        if (next !== null) setSelected((prev) => (prev?.uuid === next.uuid ? prev : next))
+        return
+      }
+      if (/^[0-9]$/.test(event.key)) {
+        event.preventDefault()
+        const buffer = appendDigit(digitsRef.current, event.key, lineup)
+        digitsRef.current = buffer
+        setDigitBuffer(buffer)
+        const immediate = resolveNumberImmediate(lineup, buffer)
+        if (immediate !== null) {
+          commitDigits(immediate)
+          return
+        }
+        if (digitTimerRef.current !== null) window.clearTimeout(digitTimerRef.current)
+        digitTimerRef.current = window.setTimeout(() => {
+          digitTimerRef.current = null
+          commitDigits(resolveNumberExact(lineup, digitsRef.current))
+        }, 2000)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      if (digitTimerRef.current !== null) window.clearTimeout(digitTimerRef.current)
+    }
+  }, [channels, selected?.uuid, commitDigits])
+
   const groups = useMemo(() => {
     const set = new Set<string>()
     for (const ch of channels ?? []) if (ch.group_name !== null) set.add(ch.group_name)
@@ -309,7 +391,7 @@ export default function WatchView(): React.JSX.Element {
         <aside className="watch-list">
           <input
             type="search"
-            placeholder="Find a channel…"
+            placeholder="Search channels & programmes…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -352,6 +434,37 @@ export default function WatchView(): React.JSX.Element {
             {channels !== null && channels.length === 0 && (
               <li className="muted-note">No channels — sync first in Settings.</li>
             )}
+            {needle !== '' && programmeHits !== null && programmeHits.length > 0 && (
+              <li className="watch-section">
+                <span className="watch-section-label">
+                  Programmes{programmeHits.length > 12 ? ` — 12 of ${programmeHits.length}` : ''}
+                </span>
+                <ul className="watch-channel-list">
+                  {programmeHits.slice(0, 12).map((hit) => (
+                    <li key={`${hit.uuid}-${hit.start_utc}`} className="watch-channel-row">
+                      <button
+                        type="button"
+                        className="watch-programme-hit"
+                        title={`${hit.title}\n${hit.name} · ${formatClock(hit.start_utc)}–${formatClock(hit.stop_utc)}`}
+                        onClick={() => {
+                          const channel = byUuid.get(hit.uuid)
+                          if (channel !== undefined) tune(channel)
+                        }}
+                      >
+                        <span className="programme-hit-time">{formatClock(hit.start_utc)}</span>
+                        <span className="programme-hit-main">
+                          <span className="programme-hit-title">{hit.title}</span>
+                          <span className="programme-hit-channel">{hit.name}</span>
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            )}
+            {filtering && sections.every((s) => s.items.length === 0) && (programmeHits === null || programmeHits.length === 0) && (
+              <li className="muted-note">No matches in channels or programmes.</li>
+            )}
           </ul>
         </aside>
 
@@ -366,6 +479,7 @@ export default function WatchView(): React.JSX.Element {
         <div className="watch-main">
           <div className="video-frame">
             <video ref={videoRef} controls playsInline className="watch-video" />
+            {digitBuffer !== null && digitBuffer !== '' && <div className="zap-osd">{digitBuffer}</div>}
           </div>
 
           <div className="watch-bar">
