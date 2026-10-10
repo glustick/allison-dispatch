@@ -397,6 +397,45 @@ ul.watch-channel-list ul.watch-channel-list {
   pointer-events: none;
 }
 
+/* ---- Mobile: the TV screen stacks. The picture is the point on a phone, so video + guide
+   come first and the channel bar slides underneath; the drag-resized sidebar grid can't
+   express that (columns are inline-styled), so the breakpoint overrides it and the drag
+   handle — a desktop affordance — disappears. ---- */
+@media (max-width: 820px) {
+  .shell {
+    padding: 1rem 0.75rem calc(1rem + env(safe-area-inset-bottom));
+  }
+
+  .shell-header h1 {
+    font-size: 1.3rem;
+  }
+
+  .tabs {
+    margin: 0.9rem 0;
+  }
+
+  .watch-layout {
+    grid-template-columns: 1fr !important;
+    gap: 1rem;
+  }
+
+  .watch-main {
+    order: -1;
+  }
+
+  .watch-list {
+    order: 1;
+  }
+
+  .resize-handle-v {
+    display: none;
+  }
+
+  aside.watch-list > ul.watch-channel-list {
+    max-height: 45vh;
+  }
+}
+
 .status-banner-error {
   color: var(--error);
 }
