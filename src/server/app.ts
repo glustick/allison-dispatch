@@ -8,7 +8,7 @@ import { readAppVersion } from './version.js'
 import { listChannels, nowNext, guideWindow, guideGrid, searchProgrammes, getSyncStates } from './queries.js'
 import { getSetting, setDispatcharrUrl, clearDispatcharrUrl, resolveDispatcharrUrl, SETTING_KEYS } from './settingsStore.js'
 import { runSync, SyncFailure, type SyncSummary } from './sync.js'
-import { relayStream, buildStreamUrl, validateOutputFormat, parseFixAudio } from './relay.js'
+import { relayStream, buildStreamUrl, validateOutputFormat, validateMaxHeight, parseFixAudio } from './relay.js'
 import { addFavorite, removeFavorite, listFavorites, listRecents, recordWatch } from './userData.js'
 import {
   createAuthContext,
@@ -345,11 +345,13 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
     })
 
     // Play info: the server builds both playback URLs from the configured base — the browser
-    // never needs to know Dispatcharr's origin, and format handling stays in one place.
+    // never needs to know Dispatcharr's origin, and format/quality handling stays in one place.
     app.get('/api/channels/:uuid/play', (req: Request, res: Response) => {
       let format: 'mpegts' | 'fmp4' | null
+      let maxHeight: number | null
       try {
         format = validateOutputFormat(req.query.output_format)
+        maxHeight = validateMaxHeight(req.query.max_height)
       } catch (err) {
         res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
         return
@@ -366,22 +368,29 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
         res.status(404).json({ error: 'channel not found' })
         return
       }
-      const relayQuery = format !== null ? `?output_format=${format}` : ''
+      const relayParams: string[] = []
+      if (format !== null) relayParams.push(`output_format=${format}`)
+      if (maxHeight !== null) relayParams.push(`max_height=${maxHeight}`)
+      const relayQuery = relayParams.length > 0 ? `?${relayParams.join('&')}` : ''
       res.json({
         uuid: channel.uuid,
         name: channel.name,
         format,
+        max_height: maxHeight,
         direct: buildStreamUrl(base, channel.uuid, format),
         relay: `/api/relay/stream/${channel.uuid}${relayQuery}`
       })
     })
 
     // Relay mode: BFF pipes the stream (for mixed-content / debugging cases). Restricted to
-    // known channel uuids — see relay.ts.
+    // known channel uuids — see relay.ts. An optional max_height turns the audio-fix ffmpeg
+    // into a capped video re-encode.
     app.get('/api/relay/stream/:uuid', (req: Request, res: Response) => {
       let format: 'mpegts' | 'fmp4' | null
+      let maxHeight: number | null
       try {
         format = validateOutputFormat(req.query.output_format)
+        maxHeight = validateMaxHeight(req.query.max_height)
       } catch (err) {
         res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
         return
@@ -401,7 +410,8 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
         format,
         res,
         req,
-        fixAudio
+        fixAudio,
+        maxHeight
       ).then((result) => {
         if (!result.ok) {
           // relayStream only fails before headers are written, so a JSON error is still valid.

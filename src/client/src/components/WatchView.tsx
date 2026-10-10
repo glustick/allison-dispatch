@@ -200,7 +200,7 @@ export default function WatchView(): React.JSX.Element {
       setStatus({ kind: 'connecting', message: null })
       monitor.reset()
       try {
-        const info = await fetchPlayInfo(selected.uuid, prefsRef.current.format)
+        const info = await fetchPlayInfo(selected.uuid, prefsRef.current.format, prefsRef.current.maxHeight)
         if (disposed) return
         if (!mpegts.isSupported()) {
           setStatus({ kind: 'failed', message: 'This browser cannot play live MPEG-TS (Media Source Extensions unsupported).' })
@@ -267,9 +267,10 @@ export default function WatchView(): React.JSX.Element {
       }
       player = null
     }
-    // The effect intentionally keys on channel/format/restart only — status updates and the
-    // retry budget flow through refs and setters that stay stable across re-runs.
-  }, [selected?.uuid, prefs.format, gen])
+    // The effect intentionally keys on channel/format/quality/restart only — status updates
+    // and the retry budget flow through refs and setters that stay stable across re-runs.
+    // A quality change restarts the stream (restart-for-quality, like the sibling app).
+  }, [selected?.uuid, prefs.format, prefs.maxHeight, gen])
 
   // Retry budget: per channel selection, shared by stall + error paths.
   useEffect(() => {
@@ -501,6 +502,25 @@ export default function WatchView(): React.JSX.Element {
               )}
             </div>
             <div className="watch-controls">
+              <label>
+                Quality{' '}
+                <select
+                  value={prefs.maxHeight === null ? '' : String(prefs.maxHeight)}
+                  onChange={(e) => {
+                    const raw = e.target.value
+                    setPrefs((prev) => {
+                      const next = { ...prev, maxHeight: raw === '' ? null : Number(raw) }
+                      savePrefs(next)
+                      return next
+                    })
+                  }}
+                >
+                  <option value="">Source</option>
+                  <option value="1080">1080p</option>
+                  <option value="720">720p</option>
+                  <option value="480">480p</option>
+                </select>
+              </label>
               <label>
                 Format{' '}
                 <select

@@ -55,6 +55,38 @@ export function parseFixAudio(raw: unknown): boolean {
   return raw === '1' || raw === 'true'
 }
 
+// Quality cap (the sibling's maxHeight port): null = Source — the relay keeps copying video.
+// A number caps the re-encode's height so a bandwidth/CPU-constrained viewer gets a picture
+// they chose deliberately. Bounded to sane heights; anything else is a client bug → 400.
+export function validateMaxHeight(raw: unknown): number | null {
+  if (raw === undefined || raw === null || raw === '') return null
+  const n = Number(raw)
+  if (!Number.isInteger(n) || n < 240 || n > 2160) {
+    throw new Error(`max_height must be an integer between 240 and 2160, got: ${String(raw)}`)
+  }
+  return n
+}
+
+// The audio-fix ffmpeg argv. With a max height the video leg becomes a capped re-encode
+// (libx264 veryfast — deliberate quality costs CPU, and the viewer asked for it): the scale
+// filter's min(ih,CAP) downsizes only when the source is taller, never upscales. The
+// filtergraph quoting ('min(ih,CAP)') is ffmpeg's own — the comma must be protected from the
+// chain parser or it splits the filter. Audio leg and muxing knobs are identical either way.
+export function buildFfmpegArgs(maxHeight: number | null): string[] {
+  const video = maxHeight === null
+    ? ['-map', '0:v:0', '-c:v', 'copy']
+    : ['-map', '0:v:0', '-vf', `scale=-2:'min(ih,${maxHeight})'`, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23']
+  return [
+    '-hide_banner', '-loglevel', 'error',
+    '-fflags', '+nobuffer',
+    '-i', 'pipe:0',
+    ...video,
+    '-map', '0:a:0?', '-c:a', 'aac', '-b:a', '192k', '-ac', '2',
+    '-muxdelay', '0.2',
+    '-f', 'mpegts', 'pipe:1'
+  ]
+}
+
 const FFMPEG_BIN_FALLBACK = ffmpegPath as unknown as string
 
 // Prefer a system ffmpeg (the Docker image ships Debian's — the bundled static linux build
@@ -84,24 +116,16 @@ export function resolveFfmpegBin(): string {
   return ffmpegBinCache
 }
 
-function spawnAudioFixer(onFfmpegSpawn?: (proc: ChildProcess) => void): ChildProcess {
-  // Video: copy (zero transcode cost, keeps the source bitrate). Audio: first audio track
-  // → AAC stereo, playable by every MSE browser. Low-latency muxing knobs keep the added
-  // delay small; the source arrives via stdin and leaves via stdout.
-  const ff = spawn(resolveFfmpegBin(), [
-    '-hide_banner', '-loglevel', 'error',
-    '-fflags', '+nobuffer',
-    '-i', 'pipe:0',
-    '-map', '0:v:0', '-c:v', 'copy',
-    '-map', '0:a:0?', '-c:a', 'aac', '-b:a', '192k', '-ac', '2',
-    '-muxdelay', '0.2',
-    '-f', 'mpegts', 'pipe:1'
-  ], { stdio: ['pipe', 'pipe', 'pipe'] })
+function spawnAudioFixer(onFfmpegSpawn: ((proc: ChildProcess) => void) | undefined, maxHeight: number | null): ChildProcess {
+  // Video: copy (zero transcode cost) unless a quality cap says reshape. Audio: first audio
+  // track → AAC stereo, playable by every MSE browser. Low-latency muxing knobs keep the
+  // added delay small; the source arrives via stdin and leaves via stdout.
+  const ff = spawn(resolveFfmpegBin(), buildFfmpegArgs(maxHeight), { stdio: ['pipe', 'pipe', 'pipe'] })
   onFfmpegSpawn?.(ff)
   return ff
 }
 
-export async function relayStream(deps: RelayDeps, uuid: string, format: 'mpegts' | 'fmp4' | null, clientRes: ServerResponse, clientReq?: IncomingMessage, fixAudio = false): Promise<RelayResult> {
+export async function relayStream(deps: RelayDeps, uuid: string, format: 'mpegts' | 'fmp4' | null, clientRes: ServerResponse, clientReq?: IncomingMessage, fixAudio = false, maxHeight: number | null = null): Promise<RelayResult> {
   const fetchImpl = deps.fetchImpl ?? fetch
   const known = deps.db.prepare('SELECT 1 FROM channels WHERE uuid = ?').get(uuid)
   if (!known) {
@@ -141,7 +165,7 @@ export async function relayStream(deps: RelayDeps, uuid: string, format: 'mpegts
   let stderrTail = ''
   let spawnFailure: Promise<never> | null = null
   if (fixAudio) {
-    ff = spawnAudioFixer(deps.onFfmpegSpawn)
+    ff = spawnAudioFixer(deps.onFfmpegSpawn, maxHeight)
     const proc = ff
     proc.stderr?.on('data', (c: Buffer) => {
       stderrTail = (stderrTail + c.toString()).slice(-800)

@@ -20,20 +20,32 @@ import type { ChildProcess } from 'child_process'
 
 const FIXTURE_PATH = path.join(tmpdir(), 'allison-dispatch-ac3-fixture.ts')
 
-function ensureAc3Fixture(): string {
-  if (existsSync(FIXTURE_PATH)) return FIXTURE_PATH
+function generateTsFixture(filePath: string, size: string): string {
   const result = spawnSync(resolveFfmpegBin(), [
     '-hide_banner', '-loglevel', 'error',
-    '-f', 'lavfi', '-i', 'testsrc=duration=45:size=320x240:rate=15',
+    '-f', 'lavfi', '-i', `testsrc=duration=45:size=${size}:rate=15`,
     '-f', 'lavfi', '-i', 'sine=frequency=440:duration=45',
     '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
     '-c:a', 'ac3', '-b:a', '128k',
-    '-f', 'mpegts', '-y', FIXTURE_PATH
+    '-f', 'mpegts', '-y', filePath
   ], { timeout: 120_000 })
-  if (result.status !== 0 || !existsSync(FIXTURE_PATH)) {
+  if (result.status !== 0 || !existsSync(filePath)) {
     throw new Error(`fixture generation failed: ${result.stderr?.toString().slice(0, 400)}`)
   }
-  return FIXTURE_PATH
+  return filePath
+}
+
+function ensureAc3Fixture(): string {
+  if (existsSync(FIXTURE_PATH)) return FIXTURE_PATH
+  return generateTsFixture(FIXTURE_PATH, '320x240')
+}
+
+// Taller than the 240-line test cap, so a capped relay must visibly downscale (640x480 → 320x240).
+const TALL_FIXTURE_PATH = path.join(tmpdir(), 'allison-dispatch-ac3-tall-fixture.ts')
+
+function ensureTallAc3Fixture(): string {
+  if (existsSync(TALL_FIXTURE_PATH)) return TALL_FIXTURE_PATH
+  return generateTsFixture(TALL_FIXTURE_PATH, '640x480')
 }
 
 async function captureBytes(url: string, ms: number): Promise<Buffer> {
@@ -63,6 +75,16 @@ async function captureBytes(url: string, ms: number): Promise<Buffer> {
 function probeCodecs(file: string): string {
   const result = spawnSync(resolveFfmpegBin(), ['-hide_banner', '-i', file], { encoding: 'utf8' })
   return result.stderr ?? ''
+}
+
+// A captured live TS often won't yield dimensions from header probing alone ("unspecified
+// size" even at 5MB probesize) — so decode one real frame to PNG and read the size from that.
+function probeVideoSize(file: string): { width: number; height: number } | null {
+  const frame = `${file}.frame.png`
+  const decode = spawnSync(resolveFfmpegBin(), ['-hide_banner', '-loglevel', 'error', '-i', file, '-map', '0:v:0', '-frames:v', '1', '-y', frame], { encoding: 'utf8', timeout: 30_000 })
+  if (decode.status !== 0 || !existsSync(frame)) return null
+  const match = probeCodecs(frame).match(/(\d{2,5})x(\d{2,5})/)
+  return match === null ? null : { width: Number(match[1]), height: Number(match[2]) }
 }
 
 describe('audio-fix relay (real ffmpeg)', () => {
@@ -119,6 +141,44 @@ describe('audio-fix relay (real ffmpeg)', () => {
     } finally {
       server.closeAllConnections()
       await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+
+  it('a max_height cap downscales the video and keeps the audio fix', { timeout: 45_000 }, async () => {
+    ensureTallAc3Fixture()
+    // A fresh fake serving the 640x480 fixture — the beforeEach one serves 320x240.
+    const tallFake = await startFakeDispatcharr({ now: new Date('2026-10-04T12:00:00Z'), streamFile: TALL_FIXTURE_PATH })
+    const tallDb = openDb(':memory:')
+    await syncM3u({ db: tallDb, dispatcharrUrl: tallFake.url })
+    const { createServer } = await import('http')
+    const server = createServer((req, res) => {
+      void relayStream(
+        { db: tallDb, dispatcharrUrl: tallFake.url },
+        DEFAULT_FAKE_CHANNELS[0].uuid, null, res, req, true, 240
+      )
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/relay`
+    try {
+      const out = await captureBytes(url, 15_000)
+      if (out.length === 0) {
+        console.log('[diag] capped relay captured ZERO bytes')
+      }
+      expect(out.length).toBeGreaterThan(20_000)
+      const outFile = path.join(tmpdir(), `allison-dispatch-capped-out-${Date.now()}.ts`)
+      writeFileSync(outFile, out)
+      const size = probeVideoSize(outFile)
+      expect(size).not.toBeNull()
+      // min(ih, 240) downscaled 480-line input to 240, width from -2 keeps the 4:3 shape.
+      expect(size!.height).toBe(240)
+      expect(size!.width).toBe(320)
+      const codecs = probeCodecs(outFile)
+      expect(codecs).toMatch(/Audio: aac/) // the audio fix rides along under a cap
+      expect(codecs).not.toMatch(/ac3/)
+    } finally {
+      server.closeAllConnections()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+      await tallFake.close()
     }
   })
 

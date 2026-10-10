@@ -3,7 +3,7 @@ import { openDb, type Db } from './db.js'
 import { startFakeDispatcharr, type FakeDispatcharr } from './testing/fakeDispatcharr.js'
 import { DEFAULT_FAKE_CHANNELS } from './testing/fixtures.js'
 import { syncM3u } from './sync.js'
-import { buildStreamUrl, relayStream, validateOutputFormat } from './relay.js'
+import { buildFfmpegArgs, buildStreamUrl, relayStream, validateMaxHeight, validateOutputFormat } from './relay.js'
 import { startHttpServer, type RunningApp } from './testing/testServer.js'
 
 const FAKE_NOW = new Date('2026-10-04T12:00:00Z')
@@ -124,6 +124,37 @@ describe('relayStream', () => {
   })
 })
 
+describe('quality cap (max_height)', () => {
+  it('validateMaxHeight: absent reads as Source, bounded integers pass, junk throws', () => {
+    expect(validateMaxHeight(undefined)).toBeNull()
+    expect(validateMaxHeight(null)).toBeNull()
+    expect(validateMaxHeight('')).toBeNull()
+    expect(validateMaxHeight('720')).toBe(720)
+    expect(validateMaxHeight(1080)).toBe(1080)
+    expect(() => validateMaxHeight('239')).toThrow(/between 240 and 2160/)
+    expect(() => validateMaxHeight('2161')).toThrow(/between 240 and 2160/)
+    expect(() => validateMaxHeight('720.5')).toThrow(/between 240 and 2160/)
+    expect(() => validateMaxHeight('tall')).toThrow(/between 240 and 2160/)
+  })
+
+  it('buildFfmpegArgs: Source copies video, a cap swaps in the downscaled re-encode', () => {
+    const source = buildFfmpegArgs(null)
+    expect(source).toContain('-c:v')
+    expect(source[source.indexOf('-c:v') + 1]).toBe('copy')
+    expect(source).not.toContain('-vf')
+
+    const capped = buildFfmpegArgs(720)
+    const vf = capped[capped.indexOf('-vf') + 1]
+    // Downscale-only: min(ih, cap); the comma is ffmpeg-quoted so the chain parser survives.
+    expect(vf).toBe("scale=-2:'min(ih,720)'")
+    expect(capped[capped.indexOf('-c:v') + 1]).toBe('libx264')
+    expect(capped).toContain('veryfast')
+    // The audio leg is untouched by the cap.
+    expect(capped).toContain('aac')
+    expect(capped[capped.indexOf('-c:a') + 1]).toBe('aac')
+  })
+})
+
 // Over the real HTTP app surface: play info + relay route + status codes. Behind the auth
 // gate since the accounts round — the suite seeds a user and attaches the session cookie.
 describe('M2 routes over HTTP', () => {
@@ -177,6 +208,26 @@ describe('M2 routes over HTTP', () => {
     expect(missing.status).toBe(404)
     const bad = await jfetch(`/api/channels/${DEFAULT_FAKE_CHANNELS[0].uuid}/play?output_format=hls`)
     expect(bad.status).toBe(400)
+  })
+
+  it('play info threads a quality cap into the relay URL; junk caps are a 400', async () => {
+    const { setDispatcharrUrl } = await import('./settingsStore.js')
+    setDispatcharrUrl(db, fake.url)
+
+    const capped = await jfetch(`/api/channels/${DEFAULT_FAKE_CHANNELS[0].uuid}/play?output_format=fmp4&max_height=720`)
+    expect(capped.status).toBe(200)
+    const body = (await capped.json()) as { relay: string; max_height: number | null }
+    expect(body.relay).toBe(`/api/relay/stream/${DEFAULT_FAKE_CHANNELS[0].uuid}?output_format=fmp4&max_height=720`)
+    expect(body.max_height).toBe(720)
+
+    // Source (no cap): the relay URL stays clean of max_height.
+    const source = await jfetch(`/api/channels/${DEFAULT_FAKE_CHANNELS[0].uuid}/play`)
+    const sourceBody = (await source.json()) as { relay: string; max_height: number | null }
+    expect(sourceBody.relay).toBe(`/api/relay/stream/${DEFAULT_FAKE_CHANNELS[0].uuid}`)
+    expect(sourceBody.max_height).toBeNull()
+
+    const junk = await jfetch(`/api/channels/${DEFAULT_FAKE_CHANNELS[0].uuid}/play?max_height=4k`)
+    expect(junk.status).toBe(400)
   })
 
   it('relay route serves bytes end-to-end and 404s unknown channels', async () => {
