@@ -382,6 +382,99 @@ ul.watch-channel-list ul.watch-channel-list {
   position: relative;
 }
 
+/* ---- Multi-view tiles: one player in single mode, two side by side in split ---- */
+.watch-tiles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.watch-tiles-single {
+  grid-template-columns: 1fr;
+}
+
+.watch-tile {
+  border: 2px solid transparent;
+  border-radius: 12px;
+  padding: 0;
+  cursor: default;
+}
+
+/* Split mode: click a tile to focus it (audio follows focus) — say so visually. */
+.watch-tile[role='button'] {
+  cursor: pointer;
+}
+
+.watch-tile-focused {
+  border-color: var(--accent);
+}
+
+.tile-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  background: var(--panel);
+  border-radius: 10px;
+  font-size: 0.9rem;
+  text-align: center;
+  padding: 1rem;
+}
+
+.tile-name {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 4;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  border-radius: 6px;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.75rem;
+  pointer-events: none;
+}
+
+.tile-muted-badge {
+  position: absolute;
+  bottom: 0.5rem;
+  right: 0.5rem;
+  z-index: 4;
+  background: rgba(0, 0, 0, 0.72);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  pointer-events: none;
+}
+
+.tile-status {
+  position: absolute;
+  left: 0.5rem;
+  bottom: 0.5rem;
+  z-index: 4;
+  margin: 0;
+  background: rgba(0, 0, 0, 0.72);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.75rem;
+  pointer-events: none;
+  max-width: calc(100% - 5rem);
+}
+
+.tile-status-error {
+  color: var(--error);
+}
+
+/* A channel playing in the non-focused tile gets a dimmer highlight than the focused one. */
+.watch-channel-passive {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
 .zap-osd {
   position: absolute;
   top: 1rem;

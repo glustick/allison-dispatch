@@ -1,19 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import mpegts from 'mpegts.js'
 import { getJson, type Channel, type ChannelsResponse, type ProgrammeHit, type ProgrammeSearchResponse } from '../lib/api.js'
 import { appendDigit, resolveNumberExact, resolveNumberImmediate, zapStep } from '../lib/zapping.js'
+import { loadPrefs, savePrefs, type OutputFormat, type PlaybackPrefs } from '../lib/playback.js'
+import { useLivePlayer } from '../lib/useLivePlayer.js'
+import { assignChannel, enterSplit, exitSplit, focusTile, INITIAL_TILES, stopTile, zapFocused, type TileState } from '../lib/tiles.js'
 import GuideView from './GuideView.js'
-import {
-  buildPlaybackUrl,
-  fetchPlayInfo,
-  isDolbyAudioCodec,
-  lastBufferedEnd,
-  loadPrefs,
-  savePrefs,
-  type OutputFormat,
-  type PlaybackPrefs
-} from '../lib/playback.js'
-import { LivePlaybackMonitor } from '../lib/liveMonitor.js'
 import { loadSavedDimension, saveDimension, useResizableDimension } from '../lib/useResizableDimension.js'
 
 interface ProgrammeSummary {
@@ -27,41 +18,36 @@ interface NowNextPayload {
   next: ProgrammeSummary | null
 }
 
-type StatusKind = 'idle' | 'connecting' | 'playing' | 'reconnecting' | 'failed'
-
-interface StatusState {
-  kind: StatusKind
-  message: string | null
-}
-
 function formatClock(epochMs: number): string {
   return new Date(epochMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
 // The one TV screen: resizable channel bar on the left (search + group filter — it absorbed
 // the old Channels tab), player on the right with now/next, and the EPG guide under the
-// player. Clicking a channel anywhere — sidebar or guide — tunes the player in place.
+// player. Clicking a channel anywhere — sidebar or guide — tunes the focused tile in place.
 // Playback always rides the BFF relay with the Dolby audio fix on (no toggle: without it
 // there is no audio at all — every provider stream carries AC-3).
+//
+// Multi-view: "Split" opens a second tile (two concurrent relay streams — inside the server's
+// RELAY_MAX_STREAMS cap). Exactly one tile is focused: it carries the audio, the zap keys and
+// the now/next bar; the other is muted. Tile placement rules live in lib/tiles.ts — filling
+// the second slot never steals audio from what's being watched.
 export default function WatchView(): React.JSX.Element {
   const [channels, setChannels] = useState<Channel[] | null>(null)
   const [search, setSearch] = useState('')
   const [group, setGroup] = useState('all')
-  const [selected, setSelected] = useState<Channel | null>(null)
+  const [tiles, setTiles] = useState<TileState>(INITIAL_TILES)
   const [prefs, setPrefs] = useState<PlaybackPrefs>(() => loadPrefs())
-  const [gen, setGen] = useState(0)
-  const [status, setStatus] = useState<StatusState>({ kind: 'idle', message: null })
   const [nowNext, setNowNext] = useState<NowNextPayload | null>(null)
-  const [codecNote, setCodecNote] = useState<string | null>(null)
-  const [autoplayBlocked, setAutoplayBlocked] = useState(false)
-  const videoRef = useRef<HTMLVideoElement | null>(null)
-  const attemptsRef = useRef(0)
-  // The reload budget survives effect re-runs but not channel changes; a ref read inside
-  // the effect would go stale, so failures funnel through a callback ref.
-  const failureRef = useRef<(what: string) => void>(() => {})
-  // Prefs as seen inside the long-lived player effect without re-binding its dependencies.
-  const prefsRef = useRef(prefs)
-  prefsRef.current = prefs
+  const [digitBuffer, setDigitBuffer] = useState<string | null>(null)
+
+  const main = tiles.channels[0]
+  const second = tiles.split ? tiles.channels[1] : null
+  const focusedChannel = tiles.channels[tiles.focused]
+  // Tile 1 mounts muted: a muted video autoplays without a gesture; focusing it (a click)
+  // is the gesture that unmutes. The audio-sync effect below keeps this true on every change.
+  const mainPlayer = useLivePlayer(main, prefs)
+  const secondPlayer = useLivePlayer(second, prefs, true)
 
   // The channel bar is drag-resizable (min 200, max 480) and persisted, matching the
   // sibling's own resizable panels.
@@ -103,7 +89,7 @@ export default function WatchView(): React.JSX.Element {
         setFavorites(new Set(favs.favorites.map((c) => c.uuid)))
         setRecents(hist.recents)
         // Resume: tune the last-watched channel automatically, like switching a TV back on.
-        if (hist.recents.length > 0) setSelected(hist.recents[0])
+        if (hist.recents.length > 0) setTiles((s) => assignChannel(s, hist.recents[0]))
       } catch {
         // Favorites/resume are enhancements — a failure here shouldn't blank the app.
       }
@@ -128,13 +114,21 @@ export default function WatchView(): React.JSX.Element {
     }
   }
 
-  // Now/next for the selected channel.
+  // Audio follows focus: the focused tile is the only unmuted one (single mode = tile 0
+  // unmuted, exactly as before split existed). Hook setters are stable; the tile shapes
+  // below fully determine the audio map, so the hook objects stay out of the deps.
   useEffect(() => {
-    if (selected === null) {
+    mainPlayer.setMuted(!(tiles.split && tiles.focused === 1))
+    secondPlayer.setMuted(!(tiles.split && tiles.focused === 1))
+  }, [tiles.split, tiles.focused, main?.uuid, second?.uuid])
+
+  // Now/next for the focused tile's channel.
+  useEffect(() => {
+    if (focusedChannel === null) {
       setNowNext(null)
       return
     }
-    const channel = selected
+    const channel = focusedChannel
     let cancelled = false
     async function poll(): Promise<void> {
       try {
@@ -150,7 +144,7 @@ export default function WatchView(): React.JSX.Element {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [selected])
+  }, [focusedChannel])
 
   // ---- Programme search: the sidebar needle searches the guide too (debounced) ----
   const [programmeHits, setProgrammeHits] = useState<ProgrammeHit[] | null>(null)
@@ -176,126 +170,13 @@ export default function WatchView(): React.JSX.Element {
     }
   }, [needle])
 
-  // Player lifecycle — re-runs on channel change, pref change, or restart (gen bump).
-  useEffect(() => {
-    const video = videoRef.current
-    if (!selected || !video) {
-      setStatus({ kind: 'idle', message: null })
-      return
-    }
-    let disposed = false
-    let player: mpegts.Player | null = null
-    let pollTimer: number | null = null
-    const monitor = new LivePlaybackMonitor({ now: () => Date.now() })
-
-    const onPlaying = (): void => {
-      if (!disposed) {
-        setStatus({ kind: 'playing', message: null })
-        setAutoplayBlocked(false)
-      }
-    }
-    video.addEventListener('playing', onPlaying)
-
-    const start = async (): Promise<void> => {
-      setStatus({ kind: 'connecting', message: null })
-      monitor.reset()
-      try {
-        const info = await fetchPlayInfo(selected.uuid, prefsRef.current.format, prefsRef.current.maxHeight)
-        if (disposed) return
-        if (!mpegts.isSupported()) {
-          setStatus({ kind: 'failed', message: 'This browser cannot play live MPEG-TS (Media Source Extensions unsupported).' })
-          return
-        }
-        player = mpegts.createPlayer(
-          { type: 'mpegts', isLive: true, url: buildPlaybackUrl(info) },
-          // Live hygiene: enough IO stash to ride out the proxy's bursty feed (stash OFF made
-          // playback underrun constantly on real channels), plus latency chasing so the
-          // buffer can't drift far behind the live edge.
-          {
-            enableStashBuffer: true,
-            lazyLoad: false,
-            liveBufferLatencyChasing: true,
-            liveBufferLatencyMaxLatency: 10,
-            liveBufferLatencyMinRemain: 2
-          }
-        )
-        player.on(mpegts.Events.ERROR, () => failureRef.current('The stream session ended'))
-        player.on(mpegts.Events.MEDIA_INFO, (raw: unknown) => {
-          if (disposed) return
-          const mi = raw as { audioCodec?: string; videoCodec?: string }
-          const audio = mi.audioCodec ?? ''
-          setCodecNote(
-            audio === ''
-              ? `${mi.videoCodec ?? 'video'} · no audio track`
-              : isDolbyAudioCodec(audio)
-                ? `${mi.videoCodec ?? 'video'} + ${audio} — Dolby fixed to AAC by the server`
-                : `${mi.videoCodec ?? 'video'} + ${audio}`
-          )
-        })
-        player.attachMediaElement(video)
-        player.load()
-        void video.play().catch(() => {
-          // Autoplay with sound needs a user gesture — resumed sessions on a fresh page load
-          // often hit this. Say so instead of looking broken.
-          if (!disposed) setAutoplayBlocked(true)
-        })
-        pollTimer = window.setInterval(() => {
-          const state = monitor.sample({
-            currentTime: video.currentTime,
-            bufferedEnd: lastBufferedEnd(video),
-            paused: video.paused,
-            readyState: video.readyState
-          })
-          if (state === 'stalled') failureRef.current('The stream seems frozen')
-        }, 1_000)
-      } catch (err) {
-        if (!disposed) {
-          setStatus({ kind: 'failed', message: err instanceof Error ? err.message : String(err) })
-        }
-      }
-    }
-    void start()
-
-    return () => {
-      disposed = true
-      video.removeEventListener('playing', onPlaying)
-      if (pollTimer !== null) window.clearInterval(pollTimer)
-      try {
-        player?.destroy()
-      } catch {
-        // destroy can throw if the pipeline was already torn down — nothing to do.
-      }
-      player = null
-    }
-    // The effect intentionally keys on channel/format/quality/restart only — status updates
-    // and the retry budget flow through refs and setters that stay stable across re-runs.
-    // A quality change restarts the stream (restart-for-quality, like the sibling app).
-  }, [selected?.uuid, prefs.format, prefs.maxHeight, gen])
-
-  // Retry budget: per channel selection, shared by stall + error paths.
-  useEffect(() => {
-    attemptsRef.current = 0
-  }, [selected?.uuid])
-
-  const handleFailure = useCallback((what: string): void => {
-    if (attemptsRef.current < 2) {
-      attemptsRef.current++
-      setStatus({ kind: 'reconnecting', message: `${what} — restarting it… (attempt ${attemptsRef.current} of 2)` })
-      setGen((g) => g + 1)
-    } else {
-      setStatus({ kind: 'failed', message: `${what}. The channel appears to be not broadcasting.` })
-    }
-  }, [])
-  failureRef.current = handleFailure
-
   function tune(channel: Channel): void {
-    setSelected((prev) => (prev?.uuid === channel.uuid ? prev : channel))
+    setTiles((prev) => assignChannel(prev, channel))
   }
 
   // ---- Keyboard zapping (TV style): ↑/↓ ±1, PgUp/PgDn ±5, digits = number entry with a
-  // 2s commit timeout. Skipped while typing in a field, while the video element (its own
-  // controls use arrows) has focus, and for modifier chords. ----
-  const [digitBuffer, setDigitBuffer] = useState<string | null>(null)
+  // 2s commit timeout. Targets the FOCUSED tile. Skipped while typing in a field, while the
+  // video element (its own controls use arrows) has focus, and for modifier chords. ----
   const digitsRef = useRef('')
   const digitTimerRef = useRef<number | null>(null)
   const commitDigits = useCallback((channel: Channel | null): void => {
@@ -305,7 +186,7 @@ export default function WatchView(): React.JSX.Element {
       window.clearTimeout(digitTimerRef.current)
       digitTimerRef.current = null
     }
-    if (channel !== null) setSelected((prev) => (prev?.uuid === channel.uuid ? prev : channel))
+    if (channel !== null) setTiles((prev) => assignChannel(prev, channel))
   }, [])
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
@@ -321,8 +202,7 @@ export default function WatchView(): React.JSX.Element {
       if (event.key === 'ArrowUp' || event.key === 'ArrowDown' || event.key === 'PageUp' || event.key === 'PageDown') {
         event.preventDefault()
         const delta = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : event.key === 'PageUp' ? -5 : 5
-        const next = zapStep(lineup, selected?.uuid ?? null, delta)
-        if (next !== null) setSelected((prev) => (prev?.uuid === next.uuid ? prev : next))
+        setTiles((prev) => zapFocused(prev, lineup, delta, zapStep))
         return
       }
       if (/^[0-9]$/.test(event.key)) {
@@ -347,7 +227,7 @@ export default function WatchView(): React.JSX.Element {
       window.removeEventListener('keydown', onKeyDown)
       if (digitTimerRef.current !== null) window.clearTimeout(digitTimerRef.current)
     }
-  }, [channels, selected?.uuid, commitDigits])
+  }, [channels, focusedChannel?.uuid, commitDigits])
 
   const groups = useMemo(() => {
     const set = new Set<string>()
@@ -386,6 +266,42 @@ export default function WatchView(): React.JSX.Element {
     return out
   }, [channels, favorites, recents, filtering, search, group, byUuid])
 
+  const focusedStatus = tiles.focused === 0 ? mainPlayer : secondPlayer
+
+  // A compact per-tile status line (split mode keeps banners out of the way).
+  function tileStatus(status: { kind: string; message: string | null }, autoplayBlocked: boolean): string {
+    if (status.kind === 'failed') return status.message ?? 'Failed.'
+    if (status.kind === 'reconnecting') return status.message ?? 'Reconnecting…'
+    if (status.kind === 'connecting') return 'Connecting…'
+    if (status.kind === 'playing') return autoplayBlocked ? 'Press ▶ for sound' : 'Playing live'
+    return ''
+  }
+
+  function renderTile(index: 0 | 1, player: ReturnType<typeof useLivePlayer>, channel: Channel | null): React.JSX.Element {
+    const isFocused = tiles.focused === index
+    return (
+      <div
+        className={`watch-tile${isFocused ? ' watch-tile-focused' : ''}${tiles.split ? '' : ' watch-tile-solo'}`}
+        onClick={() => setTiles((s) => focusTile(s, index))}
+        role={tiles.split ? 'button' : undefined}
+        aria-label={tiles.split ? `Focus ${channel?.name ?? 'empty tile'}` : undefined}
+      >
+        <div className="video-frame">
+          <video ref={player.attachVideo} controls playsInline className="watch-video" />
+          {isFocused && digitBuffer !== null && digitBuffer !== '' && <div className="zap-osd">{digitBuffer}</div>}
+          {tiles.split && channel === null && <div className="tile-hint">Pick a channel to fill this tile.</div>}
+          {tiles.split && channel !== null && <span className="tile-name">{channel.name}</span>}
+          {tiles.split && channel !== null && !isFocused && <span className="tile-muted-badge">muted</span>}
+          {tiles.split && tileStatus(player.status, player.autoplayBlocked) !== '' && (
+            <p className={`tile-status${player.status.kind === 'failed' ? ' tile-status-error' : ''}`}>
+              {tileStatus(player.status, player.autoplayBlocked)}
+            </p>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <section className="view">
       <div className="watch-layout" style={{ gridTemplateColumns: `${sidebarWidth}px 6px 1fr` }}>
@@ -408,27 +324,31 @@ export default function WatchView(): React.JSX.Element {
               <li key={section.label ?? 'all'} className="watch-section">
                 {section.label !== null && <span className="watch-section-label">{section.label}</span>}
                 <ul className="watch-channel-list">
-                  {section.items.map((ch) => (
-                    <li key={ch.uuid} className="watch-channel-row">
-                      <button
-                        type="button"
-                        className={selected?.uuid === ch.uuid ? 'watch-channel watch-channel-active' : 'watch-channel'}
-                        onClick={() => tune(ch)}
-                      >
-                        <span className="channel-number">{ch.channel_number ?? ''}</span>
-                        <span className="channel-name">{ch.name}</span>
-                      </button>
-                      <button
-                        type="button"
-                        className={favorites.has(ch.uuid) ? 'star-btn star-on' : 'star-btn'}
-                        title={favorites.has(ch.uuid) ? 'Remove from favorites' : 'Add to favorites'}
-                        aria-label={favorites.has(ch.uuid) ? 'Remove from favorites' : 'Add to favorites'}
-                        onClick={() => void toggleFavorite(ch)}
-                      >
-                        {favorites.has(ch.uuid) ? '★' : '☆'}
-                      </button>
-                    </li>
-                  ))}
+                  {section.items.map((ch) => {
+                    const onFocused = focusedChannel?.uuid === ch.uuid
+                    const onAnyTile = main?.uuid === ch.uuid || second?.uuid === ch.uuid
+                    return (
+                      <li key={ch.uuid} className="watch-channel-row">
+                        <button
+                          type="button"
+                          className={`watch-channel${onFocused ? ' watch-channel-active' : ''}${onAnyTile && !onFocused ? ' watch-channel-passive' : ''}`}
+                          onClick={() => tune(ch)}
+                        >
+                          <span className="channel-number">{ch.channel_number ?? ''}</span>
+                          <span className="channel-name">{ch.name}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className={favorites.has(ch.uuid) ? 'star-btn star-on' : 'star-btn'}
+                          title={favorites.has(ch.uuid) ? 'Remove from favorites' : 'Add to favorites'}
+                          aria-label={favorites.has(ch.uuid) ? 'Remove from favorites' : 'Add to favorites'}
+                          onClick={() => void toggleFavorite(ch)}
+                        >
+                          {favorites.has(ch.uuid) ? '★' : '☆'}
+                        </button>
+                      </li>
+                    )
+                  })}
                 </ul>
               </li>
             ))}
@@ -478,18 +398,20 @@ export default function WatchView(): React.JSX.Element {
         />
 
         <div className="watch-main">
-          <div className="video-frame">
-            <video ref={videoRef} controls playsInline className="watch-video" />
-            {digitBuffer !== null && digitBuffer !== '' && <div className="zap-osd">{digitBuffer}</div>}
+          <div className={tiles.split ? 'watch-tiles' : 'watch-tiles watch-tiles-single'}>
+            {renderTile(0, mainPlayer, main)}
+            {tiles.split && renderTile(1, secondPlayer, second)}
           </div>
 
           <div className="watch-bar">
             <div className="watch-now-next">
-              {selected === null ? (
-                <span className="muted-note">Pick a channel to start watching.</span>
+              {focusedChannel === null ? (
+                <span className="muted-note">
+                  {tiles.split ? 'Click a tile, then pick a channel.' : 'Pick a channel to start watching.'}
+                </span>
               ) : (
                 <>
-                  <strong>{selected.name}</strong>
+                  <strong>{focusedChannel.name}</strong>
                   {nowNext?.now != null && (
                     <span className="muted-note">
                       {' '}· now: {nowNext.now.title} ({formatClock(nowNext.now.start_utc)}–{formatClock(nowNext.now.stop_utc)})
@@ -538,24 +460,41 @@ export default function WatchView(): React.JSX.Element {
                   <option value="fmp4">fMP4</option>
                 </select>
               </label>
-              {selected !== null && (
-                <button type="button" onClick={() => setSelected(null)}>
+              {main !== null && (
+                <button
+                  type="button"
+                  onClick={() => setTiles((s) => (s.split ? exitSplit(s) : enterSplit(s)))}
+                  title={tiles.split ? 'Back to one tile — the second stream stops' : 'Watch a second channel side by side'}
+                >
+                  {tiles.split ? 'Exit split' : 'Split'}
+                </button>
+              )}
+              {focusedChannel !== null && (
+                <button type="button" onClick={() => setTiles((s) => stopTile(s, s.focused))}>
                   Stop
                 </button>
               )}
             </div>
           </div>
 
-          {status.kind === 'reconnecting' && (
-            <p className="status-banner status-banner-warn">{status.message}</p>
+          {!tiles.split && (
+            <>
+              {mainPlayer.status.kind === 'reconnecting' && (
+                <p className="status-banner status-banner-warn">{mainPlayer.status.message}</p>
+              )}
+              {mainPlayer.status.kind === 'failed' && (
+                <p className="status-banner status-banner-error">{mainPlayer.status.message}</p>
+              )}
+              {mainPlayer.status.kind === 'connecting' && <p className="status-banner">Connecting…</p>}
+              {mainPlayer.autoplayBlocked && mainPlayer.status.kind !== 'playing' && (
+                <p className="status-banner status-banner-warn">Press ▶ to start — the browser blocked autoplay with sound.</p>
+              )}
+              {mainPlayer.status.kind === 'playing' && <p className="status-banner status-banner-ok">Playing live.</p>}
+            </>
           )}
-          {status.kind === 'failed' && <p className="status-banner status-banner-error">{status.message}</p>}
-          {status.kind === 'connecting' && <p className="status-banner">Connecting…</p>}
-          {autoplayBlocked && status.kind !== 'playing' && (
-            <p className="status-banner status-banner-warn">Press ▶ to start — the browser blocked autoplay with sound.</p>
+          {focusedChannel !== null && focusedStatus.codecNote !== null && (
+            <p className="muted-note">Codecs: {focusedStatus.codecNote}</p>
           )}
-          {status.kind === 'playing' && <p className="status-banner status-banner-ok">Playing live.</p>}
-          {codecNote !== null && selected !== null && <p className="muted-note">Codecs: {codecNote}</p>}
 
           <GuideView embedded onWatch={tune} />
         </div>
