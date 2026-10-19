@@ -35,14 +35,19 @@ byte while Dispatcharr spins up the provider session — the player shows "Conne
 ### Deployment (live)
 
 Deployed on the NAS (192.168.0.20) as container `allison-dispatch` on **:8086**, data volume
-`/volume1/docker/allison-dispatch/data`, `DISPATCHARR_URL=http://192.168.0.20:9191`. Redeploy
-after changes:
+`/volume1/docker/allison-dispatch/data`, `DISPATCHARR_URL=http://192.168.0.20:9191`. The
+container runs the published `ghcr.io/glustick/allison-dispatch:latest` image (so Dockhand and
+similar updaters can pull it) and carries the image's own `HEALTHCHECK` on `/api/health`.
+Redeploy after changes:
 
 ```sh
 rsync -az --delete --exclude .git --exclude node_modules --exclude dist --exclude public \
   --exclude data --exclude .env ./ allison-iptv-host:allison-dispatch/
 ssh -t allison-iptv-host 'bash ~/allison-dispatch/scripts/deploy-nas.sh'   # needs sudo
 ```
+
+The script pulls the image and waits for it to report healthy. `LOCAL_BUILD=1` builds from the
+synced checkout instead, and `IMAGE=<ref>` pins a specific tag.
 
 Verify: `curl http://192.168.0.20:8086/api/health` and `/api/version`. The boot scheduler
 syncs the lineup at start (+5s), then hourly (M3U) / 6-hourly (EPG, jittered).
@@ -88,6 +93,7 @@ else — v1 stores no Dispatcharr credentials.
 
 ## Deployment
 
-Multi-arch Docker image (amd64 + arm64), same Dockhand-based manual deploy flow to the NAS
-as the sibling app. Verify a deployment with the unauthenticated `GET /api/health` and
-`GET /api/version`.
+Multi-arch Docker image (amd64 + arm64) published to GHCR on every non-doc push to `main`
+and on `v*` tags, same Dockhand-based manual deploy flow to the NAS as the sibling app. The
+image's `HEALTHCHECK` calls the unauthenticated `GET /api/health`; verify a deployment with
+that and `GET /api/version` (or `docker ps`, which should read `(healthy)`).

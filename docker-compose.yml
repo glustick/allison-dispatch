@@ -1,7 +1,10 @@
 services:
   allison-dispatch:
+    # Deploys pull this image from GHCR; `build: .` stays for local development
+    # (`docker compose build`), and deploy-nas.sh's LOCAL_BUILD=1 path uses it too.
     build: .
-    image: allison-dispatch:latest
+    image: ghcr.io/glustick/allison-dispatch:latest
+    pull_policy: always
     # Bounded on purpose — same reasoning as the sibling app: a default json-file driver
     # keeps every line forever, and this app logs sync and playback events continuously.
     logging:

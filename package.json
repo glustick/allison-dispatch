@@ -1,7 +1,7 @@
 {
   "name": "allison-dispatch",
   "productName": "Allison Dispatch",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Self-hosted web IPTV player client for a Dispatcharr instance — a clean-rebuild sibling of Allison Web IPTV.",
   "private": true,
   "type": "module",
