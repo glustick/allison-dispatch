@@ -26,8 +26,9 @@ change their own password there. Failed logins are throttled per IP (5 per 15 mi
 
 One **TV** screen (watch + guide + channels combined) plus **Settings**. The TV screen:
 resizable channel bar on the left (search + group filter), player with now/next on the
-right, and the EPG guide grid under the player (drag-to-pan, now-line, programme detail —
-click any channel anywhere to tune). Playback always rides the BFF relay with the Dolby
+right, and the EPG guide grid under the player (drag-to-pan, 3-hour steps, a **Prime time**
+jump and group/★ filters, now-line, programme detail — click any channel anywhere to tune).
+Panning refetches once the drag settles, not per pointer event. Playback always rides the BFF relay with the Dolby
 audio fix (ffmpeg video-copy + AC-3→AAC — every provider stream carries AC-3, so without
 it there is no audio; there is deliberately no toggle). Cold channels take ~8s to first
 byte while Dispatcharr spins up the provider session — the player shows "Connecting…".
@@ -49,8 +50,10 @@ ssh -t allison-iptv-host 'bash ~/allison-dispatch/scripts/deploy-nas.sh'   # nee
 The script pulls the image and waits for it to report healthy. `LOCAL_BUILD=1` builds from the
 synced checkout instead, and `IMAGE=<ref>` pins a specific tag.
 
-Verify: `curl http://192.168.0.20:8086/api/health` and `/api/version`. The boot scheduler
-syncs the lineup at start (+5s), then hourly (M3U) / 6-hourly (EPG, jittered).
+Verify: `curl http://192.168.0.20:8086/api/health` (liveness) and `/api/ready` (real readiness —
+it queries the database and reports whether Dispatcharr is configured; `?deep=1` adds a 3s
+reachability probe). The boot scheduler syncs the lineup at start (+5s), then hourly (M3U) /
+6-hourly (EPG, jittered) — re-arming each tick, not once after boot.
 
 ### Verifying playback in a browser
 

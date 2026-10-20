@@ -6,6 +6,7 @@ import { resolveDispatcharrUrl } from './settingsStore.js'
 import { runSync, SyncFailure } from './sync.js'
 import { ensureSeedUser, validatePassword, validateUsername } from './auth.js'
 import { startBackupLoop } from './backup.js'
+import { startSyncScheduler } from './syncScheduler.js'
 import path from 'path'
 
 const cfg = loadConfig(process.env)
@@ -42,33 +43,21 @@ app.listen(cfg.port, () => {
 // ---- Periodic sync ----
 // Lineup changes are small and frequent (provider reshuffles), the guide is a multi-MB
 // transfer — so M3U syncs run hourly and the EPG every 6 hours, both with random jitter so a
-// fleet of restarts doesn't thundering-herd Dispatcharr. In-flight double-runs are guarded in
-// sync.ts; failures are already recorded in sync_state, so here we only log one line.
-const M3U_INTERVAL_MS = 60 * 60 * 1000
-const EPG_INTERVAL_MS = 6 * 60 * 60 * 1000
-const JITTER_MS = 15 * 60 * 1000
-const BOOT_DELAY_MS = 5_000
-
-function scheduledSync(kinds: Array<'m3u' | 'epg'>): () => void {
-  return () => {
+// fleet of restarts doesn't thundering-herd Dispatcharr. The cadence itself lives in
+// syncScheduler.ts, where "does it re-arm?" is testable: v0.1.1 scheduled a single timeout,
+// so after the first refresh the lineup and guide went stale until the next container
+// restart. In-flight double-runs are guarded in sync.ts; failures are already recorded in
+// sync_state, so here we only log one line.
+startSyncScheduler({
+  run: (kinds) => {
     const base = resolveDispatcharrUrl(db, cfg.dispatcharrUrl)
     if (base === null) return
-    runSync({ db, dispatcharrUrl: base }, kinds).catch((err: unknown) => {
+    return runSync({ db, dispatcharrUrl: base }, kinds).catch((err: unknown) => {
       const message = err instanceof SyncFailure ? err.message : String(err)
       console.log(`[sync] ${kinds.join('+')} failed: ${message}`)
     })
   }
-}
-
-function schedule(fn: () => void, intervalMs: number): void {
-  const timer = setTimeout(fn, intervalMs + Math.random() * JITTER_MS)
-  timer.unref()
-}
-
-const initial = setTimeout(() => scheduledSync(['m3u', 'epg'])(), BOOT_DELAY_MS)
-initial.unref()
-schedule(scheduledSync(['m3u']), M3U_INTERVAL_MS)
-schedule(scheduledSync(['epg']), EPG_INTERVAL_MS)
+})
 
 // ---- Daily db backup ----
 // One gzipped snapshot at boot and one per day after, pruned to the newest BACKUP_KEEP.

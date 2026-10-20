@@ -5,6 +5,7 @@ import path from 'path'
 import { loadConfig, normalizeDispatcharrUrl } from './config.js'
 import { createApp } from './app.js'
 import { startHttpServer, type RunningApp } from './testing/testServer.js'
+import { openDb } from './db.js'
 import { readAppVersion } from './version.js'
 
 describe('loadConfig', () => {
@@ -126,5 +127,49 @@ describe('createApp — M0 endpoints', () => {
     await boot(path.join(tmpPublic, 'does-not-exist'))
     const res = await fetch(`${running.url}/`)
     expect(res.status).toBe(404)
+  })
+
+  it('sets the baseline hardening headers, but no HSTS over plain http', async () => {
+    await boot()
+    const res = await fetch(`${running.url}/api/health`)
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(res.headers.get('x-frame-options')).toBe('DENY')
+    expect(res.headers.get('referrer-policy')).toBe('no-referrer')
+    expect(res.headers.get('permissions-policy')).toBe('camera=(), microphone=(), geolocation=()')
+    expect(res.headers.get('strict-transport-security')).toBeNull()
+  })
+
+  it('adds HSTS once the request arrived over HTTPS', async () => {
+    await boot()
+    const res = await fetch(`${running.url}/api/health`, { headers: { 'x-forwarded-proto': 'https' } })
+    expect(res.headers.get('strict-transport-security')).toBe('max-age=31536000; includeSubDomains')
+  })
+
+  it('GET /api/ready answers 200 without a session and names what it checked', async () => {
+    await boot()
+    const res = await fetch(`${running.url}/api/ready`)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { status: string; checks: Record<string, string> }
+    expect(body.status).toBe('ready')
+    expect(body.checks).toEqual({ db: 'disabled', dispatcharr: 'not configured' })
+  })
+})
+
+// Liveness is not readiness: the process can be up with a database that cannot answer a
+// query, which is exactly the state a static /api/health used to call "ok".
+describe('createApp — readiness with a dead database', () => {
+  it('answers 503 instead of pretending to be healthy', async () => {
+    const db = openDb(':memory:')
+    const running = await startHttpServer(createApp(loadConfig({}), { db }))
+    db.close()
+    try {
+      const res = await fetch(`${running.url}/api/ready`)
+      expect(res.status).toBe(503)
+      const body = (await res.json()) as { status: string; checks: Record<string, string> }
+      expect(body.status).toBe('unavailable')
+      expect(body.checks.db).toMatch(/^failed:/)
+    } finally {
+      await running.close()
+    }
   })
 })

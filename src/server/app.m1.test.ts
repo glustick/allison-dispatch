@@ -275,6 +275,21 @@ describe('M1 API surfaces', () => {
     })
   })
 
+  it('readiness checks the real database and can probe Dispatcharr deeply', async () => {
+    const before = await fetch(`${running.url}/api/ready`)
+    expect(before.status).toBe(200)
+    const beforeBody = (await before.json()) as { status: string; checks: Record<string, string> }
+    expect(beforeBody.checks).toMatchObject({ db: 'ok', dispatcharr: 'not configured' })
+
+    await putUrl(fake.url)
+    const shallow = (await (await fetch(`${running.url}/api/ready`)).json()) as { checks: Record<string, string> }
+    expect(shallow.checks.dispatcharr).toBe('configured')
+
+    const deep = (await (await fetch(`${running.url}/api/ready?deep=1`)).json()) as { status: string; checks: Record<string, string> }
+    expect(deep.status).toBe('ready')
+    expect(deep.checks.dispatcharr).toMatch(/^ok \(v/)
+  })
+
   it('unknown channel uuid on now-next is a 404', async () => {
     await putUrl(fake.url)
     await jfetch('/api/sync/run', { method: 'POST' })

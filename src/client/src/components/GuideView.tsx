@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { getJson, type Channel } from '../lib/api.js'
 import { loadSavedDimension, saveDimension, useResizableDimension } from '../lib/useResizableDimension.js'
+import { ALL_GROUPS, filterGuideChannels, guideGroups } from '../lib/guideFilters.js'
 
 const HOUR_MS = 3_600_000
 const WINDOW_HOURS = 3
@@ -48,7 +49,27 @@ function hourLabel(ms: number): string {
   return new Date(ms).toLocaleTimeString([], { hour: 'numeric' })
 }
 
-export default function GuideView({ onWatch, embedded = false }: { onWatch: (channel: Channel) => void; embedded?: boolean }): React.JSX.Element {
+// "Prime time" is 20:00 local — today if it is still ahead, tomorrow otherwise. Returned as
+// an offset from the hour-aligned window anchor so it flows through the same state as a pan.
+function primeTimeOffset(baseHourMs: number, nowMs: number): number {
+  const target = new Date(baseHourMs)
+  target.setHours(20, 0, 0, 0)
+  if (target.getTime() <= nowMs) target.setDate(target.getDate() + 1)
+  return target.getTime() - baseHourMs
+}
+
+const NO_FAVORITES: ReadonlySet<string> = new Set()
+
+export default function GuideView({
+  onWatch,
+  embedded = false,
+  favorites
+}: {
+  onWatch: (channel: Channel) => void
+  embedded?: boolean
+  /** The viewer's starred channels, for the favourites-only filter. */
+  favorites?: ReadonlySet<string>
+}): React.JSX.Element {
   const [now, setNow] = useState(() => Date.now())
   const [windowOffsetMs, setWindowOffsetMs] = useState(0)
   const [grid, setGrid] = useState<GridResponse | null>(null)
@@ -56,6 +77,8 @@ export default function GuideView({ onWatch, embedded = false }: { onWatch: (cha
   const [loading, setLoading] = useState(true)
   const [detail, setDetail] = useState<Selection | null>(null)
   const [panning, setPanning] = useState(false)
+  const [group, setGroup] = useState<string>(ALL_GROUPS)
+  const [favoritesOnly, setFavoritesOnly] = useState(false)
 
   const { dimension: channelColWidth, startDrag: startChannelColDrag } = useResizableDimension(
     loadSavedDimension('allison-dispatch.guide-channel-col', 160, 90, 320),
@@ -85,12 +108,14 @@ export default function GuideView({ onWatch, embedded = false }: { onWatch: (cha
       .finally(() => setLoading(false))
   }, [])
 
-  const fetchKey = `${windowStart}`
+  // Debounced: dragging the timeline moves windowStart on every pointer event, and the old
+  // effect fetched once per move — dozens of full-grid queries per drag. Waiting for the drag
+  // to settle costs one request. Deps are primitives, so the 30s clock tick (which leaves the
+  // hour-aligned window unchanged) does not refetch.
   useEffect(() => {
-    reload(windowStart, windowEnd)
-    // Refetches when the hour-aligned window moves; reload is stable and now/windowEnd are
-    // captured per fetchKey change.
-  }, [fetchKey])
+    const timer = window.setTimeout(() => reload(windowStart, windowEnd), 180)
+    return () => window.clearTimeout(timer)
+  }, [windowStart, windowEnd, reload])
 
   // ---- drag-to-pan through time (horizontal only; the channel list scrolls on its own) ----
   const panRef = useRef<{ startX: number; startOffset: number; width: number; pointerId: number } | null>(null)
@@ -140,8 +165,59 @@ export default function GuideView({ onWatch, embedded = false }: { onWatch: (cha
   const showNowLine = now >= windowStart && now <= windowEnd
   const nowPct = pct(now, windowStart, windowEnd)
 
+  const favSet = favorites ?? NO_FAVORITES
+  const groups = useMemo(() => guideGroups(grid?.channels ?? []), [grid])
+  const visibleChannels = useMemo(
+    () => filterGuideChannels(grid?.channels ?? [], { group, favoritesOnly, favorites: favSet }),
+    [grid, group, favoritesOnly, favSet]
+  )
+
   return (
     <section className={`view epg-grid${panning ? ' epg-grid--panning' : ''}${embedded ? ' epg-grid--embedded' : ''}`}>
+      <div className="epg-toolbar">
+        <div className="epg-nav-buttons">
+          <button type="button" onClick={() => setWindowOffsetMs((o) => o - WINDOW_MS)} title="Three hours earlier">
+            ‹ 3h
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setWindowOffsetMs(0)
+              setDetail(null)
+            }}
+          >
+            Now
+          </button>
+          <button type="button" onClick={() => setWindowOffsetMs((o) => o + WINDOW_MS)} title="Three hours later">
+            3h ›
+          </button>
+          <button
+            type="button"
+            onClick={() => setWindowOffsetMs(primeTimeOffset(baseHour, now))}
+            title="Jump to 20:00"
+          >
+            Prime time
+          </button>
+        </div>
+        <label>
+          Group{' '}
+          <select value={group} onChange={(e) => setGroup(e.target.value)}>
+            {groups.map((g) => (
+              <option key={g} value={g}>
+                {g === ALL_GROUPS ? 'All groups' : g}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={favoritesOnly}
+            onChange={(e) => setFavoritesOnly(e.target.checked)}
+          />{' '}
+          ★ only
+        </label>
+      </div>
       <div className="epg-time-header">
         <div className="epg-grid-nav" style={{ width: channelColWidth }}>
           <button
@@ -151,16 +227,6 @@ export default function GuideView({ onWatch, embedded = false }: { onWatch: (cha
             title="Drag to resize the channel column"
             aria-label="Resize channel column"
           />
-          <button
-            type="button"
-            className="epg-now-btn"
-            onClick={() => {
-              setWindowOffsetMs(0)
-              setDetail(null)
-            }}
-          >
-            Now
-          </button>
         </div>
         <div className="epg-time-header-track" onPointerDown={onTimelinePointerDown} title="Drag left/right to move through time">
           {hours.map((t) => (
@@ -178,8 +244,11 @@ export default function GuideView({ onWatch, embedded = false }: { onWatch: (cha
         {grid !== null && grid.count === 0 && (
           <p className="empty-hint">No channels yet — sync first in Settings.</p>
         )}
+        {grid !== null && grid.count > 0 && visibleChannels.length === 0 && (
+          <p className="empty-hint">No channels match this filter.</p>
+        )}
         <div className="epg-rows">
-          {(grid?.channels ?? []).map((channel) => (
+          {visibleChannels.map((channel) => (
             <div className="epg-row" key={channel.uuid} style={{ height: ROW_HEIGHT }}>
               <button
                 type="button"

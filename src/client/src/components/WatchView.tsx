@@ -496,7 +496,7 @@ export default function WatchView(): React.JSX.Element {
             <p className="muted-note">Codecs: {focusedStatus.codecNote}</p>
           )}
 
-          <GuideView embedded onWatch={tune} />
+          <GuideView embedded onWatch={tune} favorites={favorites} />
         </div>
       </div>
     </section>

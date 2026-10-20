@@ -1,6 +1,6 @@
 import { existsSync } from 'fs'
 import path from 'path'
-import express, { type Express, type Request, type Response } from 'express'
+import express, { type Express, type Request, type Response, type NextFunction } from 'express'
 import type { Db } from './db.js'
 import type { AppConfig } from './config.js'
 import { normalizeDispatcharrUrl } from './config.js'
@@ -70,6 +70,23 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
   // Behind the reverse proxy (NPM) so req.secure/req.ip honor X-Forwarded-* — needed for
   // Secure cookie decisions and per-IP login throttling.
   app.set('trust proxy', true)
+  // Baseline hardening for a hostname that is reachable from the internet. Deliberately no
+  // Content-Security-Policy yet: the player needs blob: media sources and Vite emits module
+  // scripts, and a policy guessed without a real-browser check is how a TV night breaks. These
+  // four are safe unconditionally; HSTS only makes sense once the request actually arrived on
+  // HTTPS (the app is also served over plain LAN HTTP, where HSTS would poison the browser).
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+    res.setHeader('X-Frame-Options', 'DENY')
+    res.setHeader('Referrer-Policy', 'no-referrer')
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
+    const forwardedProto = req.headers['x-forwarded-proto']
+    const proto = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto
+    if (req.secure || proto === 'https') {
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+    }
+    next()
+  })
   app.use(express.json({ limit: '1mb' }))
   // Live count of relayed streams served by THIS app instance. Each one holds an upstream
   // provider session open and — in fix-audio mode — a running ffmpeg; without a cap a few
@@ -95,6 +112,57 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
     res.json({
       dispatcharrConfigured: services.db ? resolveDispatcharrUrl(services.db, cfg.dispatcharrUrl) !== null : cfg.dispatcharrUrl !== null
     })
+  })
+
+  // Readiness, as distinct from the liveness above: the process being up says nothing about
+  // whether it can serve. A static "ok" is exactly how a container reports healthy while the
+  // database is gone or Dispatcharr has stopped answering. The DB check is cheap and real;
+  // Dispatcharr is reported as configured/not, and `?deep=1` adds the same 3s reachability
+  // probe the Settings screen uses for operators chasing "the guide stopped updating".
+  const testConnectionFn = services.testConnectionFn ?? defaultTestConnection
+  app.get('/api/ready', (req: Request, res: Response) => {
+    const checks: Record<string, string> = {}
+    let ready = true
+    // The URL lives in the settings table, so a dead db means the URL is unknowable — one
+    // try block covers both reads, or the readiness probe would 500 on its own outage.
+    let base: string | null = cfg.dispatcharrUrl
+    if (services.db !== undefined) {
+      try {
+        services.db.prepare('SELECT 1').get()
+        checks.db = 'ok'
+        base = resolveDispatcharrUrl(services.db, cfg.dispatcharrUrl)
+      } catch (err) {
+        checks.db = `failed: ${err instanceof Error ? err.message : String(err)}`
+        ready = false
+        base = null
+      }
+    } else {
+      checks.db = 'disabled'
+    }
+    const respond = (): void => {
+      res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'unavailable', checks })
+    }
+    if (base === null) {
+      checks.dispatcharr = ready ? 'not configured' : 'unknown (database unavailable)'
+      respond()
+      return
+    }
+    if (req.query.deep !== '1') {
+      checks.dispatcharr = 'configured'
+      respond()
+      return
+    }
+    // A deep probe that cannot reach Dispatcharr reports the fault but does NOT mark the app
+    // unready: the player still serves the lineup and guide already in SQLite.
+    testConnectionFn(base)
+      .then((result) => {
+        checks.dispatcharr = result.ok ? `ok (v${result.version ?? 'unknown'})` : `unreachable: ${result.error ?? 'unknown error'}`
+        respond()
+      })
+      .catch((err: unknown) => {
+        checks.dispatcharr = `unreachable: ${err instanceof Error ? err.message : String(err)}`
+        respond()
+      })
   })
 
   // ---- Authentication ----
@@ -285,7 +353,6 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
       // the tests inject, not the wall (a suite run days after fixture data would wipe it).
       return runSync({ db: d, dispatcharrUrl: base, now: clock }, kinds)
     })
-    const testConnectionFn = services.testConnectionFn ?? defaultTestConnection
 
     app.get('/api/channels', (_req: Request, res: Response) => {
       const channels = listChannels(db)

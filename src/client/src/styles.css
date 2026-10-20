@@ -540,6 +540,31 @@ ul.watch-channel-list ul.watch-channel-list {
   gap: 0.5rem;
 }
 
+.epg-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0 0.6rem;
+}
+
+.epg-nav-buttons {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.epg-toolbar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.epg-toolbar select {
+  padding: 0.3rem 0.5rem;
+}
+
 .epg-time-header {
   display: flex;
   flex-shrink: 0;
@@ -550,22 +575,6 @@ ul.watch-channel-list ul.watch-channel-list {
   display: flex;
   gap: 4px;
   flex-shrink: 0;
-}
-
-.epg-now-btn {
-  flex: 1;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--muted);
-  font-size: 11px;
-  padding: 4px 0;
-  cursor: pointer;
-}
-
-.epg-now-btn:hover {
-  color: var(--text);
-  border-color: var(--accent);
 }
 
 .epg-resize-handle {
