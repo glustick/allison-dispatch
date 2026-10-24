@@ -35,7 +35,12 @@ zap keys, every tile has its own × close, each tile shows what's on right now, 
 audio-only (radio) channels render a station card with logo and live equalizer bars instead
 of a black frame. TV-remote habits: ↑/↓/PgUp/PgDn and digit entry zap, **z/Backspace jumps
 back to the previous channel** (press again to toggle), and **PiP** pops the focused
-picture into a floating window.
+picture into a floating window; **?** (or the ? button) lists every shortcut. The focused
+tile is what the OS media controls show (programme, channel, logo — hardware media keys
+zap and pause), the tab title names the channel, and failed streams offer a **Try again**
+button after the player's own retry budget is spent. The app is **installable** (PWA
+manifest + icons; the service worker is a deliberate no-op — caching would pin viewers to
+stale bundles).
 Playback always rides the BFF relay with the Dolby
 audio fix (ffmpeg video-copy + AC-3→AAC — every provider stream carries AC-3, so without
 it there is no audio; there is deliberately no toggle). Cold channels take ~8s to first

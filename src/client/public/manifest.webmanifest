@@ -1,0 +1,15 @@
+{
+  "name": "Allison Dispatch",
+  "short_name": "Dispatch",
+  "description": "Self-hosted IPTV player for a Dispatcharr instance.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#10141a",
+  "theme_color": "#10141a",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

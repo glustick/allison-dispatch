@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getJson, type Channel, type ChannelsResponse, type ProgrammeHit, type ProgrammeSearchResponse } from '../lib/api.js'
 import { appendDigit, resolveNumberExact, resolveNumberImmediate, toggledChannel, zapStep } from '../lib/zapping.js'
 import { loadPrefs, savePrefs, togglePictureInPicture, type OutputFormat, type PlaybackPrefs } from '../lib/playback.js'
+import { buildMediaMetadata } from '../lib/mediaSession.js'
 import { useLivePlayer } from '../lib/useLivePlayer.js'
 import { addTile, assignChannel, collapseToSingle, focusTile, INITIAL_TILES, MAX_TILES, removeTile, stopTile, zapFocused, type TileState } from '../lib/tiles.js'
 import GuideView from './GuideView.js'
@@ -181,6 +182,36 @@ export default function WatchView(): React.JSX.Element {
   }, [activeUuids])
   const focusedNowNext = focusedUuid !== null ? nowNextByUuid[focusedUuid] ?? null : null
 
+  // ---- OS media controls (Media Session): hardware keys, the media HUD, the lock screen ----
+  // The focused tile is "what's playing": programme + channel + logo in the HUD, and the
+  // media keys behave like a remote (play/pause, next/previous channel, stop).
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return
+    const ms = navigator.mediaSession
+    if (focusedChannel === null) {
+      ms.metadata = null
+      ms.playbackState = 'none'
+      return
+    }
+    ms.metadata = new MediaMetadata(
+      buildMediaMetadata({ channel: focusedChannel, nowTitle: focusedNowNext?.now?.title ?? null })
+    )
+    ms.playbackState = players[tiles.focused].status.kind === 'playing' ? 'playing' : 'paused'
+    ms.setActionHandler('play', () => { void players[tiles.focused].getVideoEl()?.play() })
+    ms.setActionHandler('pause', () => { players[tiles.focused].getVideoEl()?.pause() })
+    ms.setActionHandler('previoustrack', () => setTiles((s) => zapFocused(s, channels ?? [], -1, zapStep)))
+    ms.setActionHandler('nexttrack', () => setTiles((s) => zapFocused(s, channels ?? [], 1, zapStep)))
+    ms.setActionHandler('stop', () => setTiles((s) => stopTile(s, s.focused)))
+  }, [focusedChannel, focusedNowNext, tiles.focused, channels, players[tiles.focused].status.kind])
+
+  // The tab (and any PiP window) names the channel it is playing.
+  useEffect(() => {
+    document.title = focusedChannel !== null ? `${focusedChannel.name} · Allison Dispatch` : 'Allison Dispatch'
+  }, [focusedChannel])
+
+  // ---- Keyboard shortcuts overlay ('?') ----
+  const [helpOpen, setHelpOpen] = useState(false)
+
   // ---- Programme search: the sidebar needle searches the guide too (debounced) ----
   const [programmeHits, setProgrammeHits] = useState<ProgrammeHit[] | null>(null)
   const needle = search.trim()
@@ -259,6 +290,15 @@ export default function WatchView(): React.JSX.Element {
         event.preventDefault()
         const back = toggledChannel(lineup, lastChannelRef.current)
         if (back !== null) setTiles((prev) => assignChannel(prev, back))
+        return
+      }
+      if (event.key === '?') {
+        event.preventDefault()
+        setHelpOpen((open) => !open)
+        return
+      }
+      if (event.key === 'Escape') {
+        setHelpOpen(false)
         return
       }
       if (/^[0-9]$/.test(event.key)) {
@@ -370,6 +410,18 @@ export default function WatchView(): React.JSX.Element {
             <p className={`tile-status${player.status.kind === 'failed' ? ' tile-status-error' : ''}`}>
               {tileStatus(player.status, player.autoplayBlocked)}
             </p>
+          )}
+          {multi && player.status.kind === 'failed' && (
+            <button
+              type="button"
+              className="tile-retry"
+              onClick={(e) => {
+                e.stopPropagation() // retrying is not focusing
+                player.restart()
+              }}
+            >
+              Try again
+            </button>
           )}
           {multi && (
             <button
@@ -591,6 +643,14 @@ export default function WatchView(): React.JSX.Element {
                   Stop
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() => setHelpOpen(true)}
+                title="Keyboard shortcuts"
+                aria-label="Keyboard shortcuts"
+              >
+                ?
+              </button>
             </div>
           </div>
 
@@ -602,6 +662,11 @@ export default function WatchView(): React.JSX.Element {
               {players[0].status.kind === 'failed' && (
                 <p className="status-banner status-banner-error">{players[0].status.message}</p>
               )}
+              {players[0].status.kind === 'failed' && (
+                <button type="button" className="banner-retry" onClick={() => players[0].restart()}>
+                  Try again
+                </button>
+              )}
               {players[0].status.kind === 'connecting' && <p className="status-banner">Connecting…</p>}
               {players[0].autoplayBlocked && players[0].status.kind !== 'playing' && (
                 <p className="status-banner status-banner-warn">Press ▶ to start — the browser blocked autoplay with sound.</p>
@@ -611,6 +676,28 @@ export default function WatchView(): React.JSX.Element {
           )}
           {focusedChannel !== null && focusedStatus.codecNote !== null && (
             <p className="muted-note">Codecs: {focusedStatus.codecNote}</p>
+          )}
+
+          {helpOpen && (
+            <div className="help-overlay" onClick={() => setHelpOpen(false)}>
+              <div className="help-card" role="dialog" aria-label="Keyboard shortcuts" onClick={(e) => e.stopPropagation()}>
+                <h2>Keyboard shortcuts</h2>
+                <dl className="help-list">
+                  <dt>↑ / ↓</dt>
+                  <dd>Previous / next channel</dd>
+                  <dt>PgUp / PgDn</dt>
+                  <dd>Zap five channels at a time</dd>
+                  <dt>0–9</dt>
+                  <dd>Enter a channel number, like a remote</dd>
+                  <dt>z / Backspace</dt>
+                  <dd>Back to the previous channel (press again to return)</dd>
+                  <dt>?</dt>
+                  <dd>This help</dd>
+                </dl>
+                <p className="muted-note">Keys are ignored while typing in a field. Clicking a channel anywhere tunes the focused tile.</p>
+                <button type="button" onClick={() => setHelpOpen(false)}>Close</button>
+              </div>
+            </div>
           )}
 
           <GuideView embedded onWatch={tune} favorites={favorites} />

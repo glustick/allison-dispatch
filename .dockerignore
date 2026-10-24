@@ -1,6 +1,7 @@
 node_modules
 dist
 public
+!src/client/public
 data
 .git
 .github

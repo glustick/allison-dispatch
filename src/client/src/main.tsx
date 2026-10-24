@@ -10,3 +10,11 @@ createRoot(root).render(
     <App />
   </StrictMode>
 )
+
+// Register the deliberate no-op service worker (see public/sw.js): installability without
+// caching, so deploys always reach viewers.
+if ('serviceWorker' in navigator) {
+  void navigator.serviceWorker.register('/sw.js').catch(() => {
+    // Registration failing (dev server, private mode) just means no install prompt.
+  })
+}

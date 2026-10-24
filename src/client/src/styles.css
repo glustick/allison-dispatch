@@ -611,6 +611,64 @@ ul.watch-channel-list ul.watch-channel-list {
   pointer-events: none;
 }
 
+/* Manual reconnect after the player's own retry budget is spent. */
+.tile-retry {
+  position: absolute;
+  bottom: 0.5rem;
+  right: 0.5rem;
+  z-index: 6;
+}
+
+.banner-retry {
+  margin: 0.35rem 0 0.75rem;
+}
+
+/* Keyboard shortcuts overlay ('?' or the ? button). */
+.help-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 10, 14, 0.72);
+  padding: 1rem;
+}
+
+.help-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.25rem 1.5rem;
+  max-width: 26rem;
+  width: 100%;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.help-card h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.1rem;
+}
+
+.help-list {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.45rem 1rem;
+  margin: 0 0 0.75rem;
+}
+
+.help-list dt {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.help-list dd {
+  margin: 0;
+  color: var(--text);
+}
+
 .zap-osd {
   position: absolute;
   top: 1rem;
@@ -662,6 +720,15 @@ ul.watch-channel-list ul.watch-channel-list {
 
   aside.watch-list > ul.watch-channel-list {
     max-height: 45vh;
+  }
+
+  /* A 2×2 grid of 16:9 pictures is unreadable on a phone — multi-view stacks. */
+  .watch-tiles {
+    grid-template-columns: 1fr;
+  }
+
+  .watch-tiles[data-count='3'] .watch-tile:last-child {
+    grid-column: auto;
   }
 }
 
