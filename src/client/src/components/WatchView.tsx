@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getJson, type Channel, type ChannelsResponse, type ProgrammeHit, type ProgrammeSearchResponse } from '../lib/api.js'
-import { appendDigit, resolveNumberExact, resolveNumberImmediate, zapStep } from '../lib/zapping.js'
-import { loadPrefs, savePrefs, type OutputFormat, type PlaybackPrefs } from '../lib/playback.js'
+import { appendDigit, resolveNumberExact, resolveNumberImmediate, toggledChannel, zapStep } from '../lib/zapping.js'
+import { loadPrefs, savePrefs, togglePictureInPicture, type OutputFormat, type PlaybackPrefs } from '../lib/playback.js'
 import { useLivePlayer } from '../lib/useLivePlayer.js'
 import { addTile, assignChannel, collapseToSingle, focusTile, INITIAL_TILES, MAX_TILES, removeTile, stopTile, zapFocused, type TileState } from '../lib/tiles.js'
 import GuideView from './GuideView.js'
@@ -40,12 +40,12 @@ export default function WatchView(): React.JSX.Element {
   const [group, setGroup] = useState('all')
   const [tiles, setTiles] = useState<TileState>(INITIAL_TILES)
   const [prefs, setPrefs] = useState<PlaybackPrefs>(() => loadPrefs())
-  const [nowNext, setNowNext] = useState<NowNextPayload | null>(null)
   const [digitBuffer, setDigitBuffer] = useState<string | null>(null)
 
   const activeChannel = (index: number): Channel | null => (index < tiles.count ? tiles.channels[index] ?? null : null)
   const main = activeChannel(0)
   const focusedChannel = activeChannel(tiles.focused)
+  const focusedUuid = focusedChannel?.uuid ?? null
   // Tiles 1+ mount muted: a muted video autoplays without a gesture; focusing one (a click)
   // is the gesture that unmutes. The audio-sync effect below keeps this true on every change.
   // All MAX_TILES hooks exist for the session — an unused one sits idle on a null channel.
@@ -131,21 +131,46 @@ export default function WatchView(): React.JSX.Element {
     }
   }, [tiles.focused, tiles.count, activeUuids])
 
-  // Now/next for the focused tile's channel.
+  // ---- Last-channel memory (the remote's "back" button) ----
+  // Whenever the focused tile moves from one channel to another, remember where it came
+  // from. 'z'/Backspace then jumps back — and because that jump is itself a change, the
+  // next press returns, remote-toggle style. Stopping a tile doesn't erase the memory, so
+  // "stop, watch something else, back" still finds the stopped channel.
+  const lastChannelRef = useRef<string | null>(null)
+  const prevFocusedRef = useRef<string | null>(null)
   useEffect(() => {
-    if (focusedChannel === null) {
-      setNowNext(null)
+    if (focusedUuid === null) return
+    if (prevFocusedRef.current !== null && prevFocusedRef.current !== focusedUuid) {
+      lastChannelRef.current = prevFocusedRef.current
+    }
+    prevFocusedRef.current = focusedUuid
+  }, [focusedUuid])
+
+  // ---- Now/next for every active tile (the focused one also drives the bar below) ----
+  const [nowNextByUuid, setNowNextByUuid] = useState<Record<string, NowNextPayload>>({})
+  useEffect(() => {
+    if (activeUuids === '') {
+      setNowNextByUuid({})
       return
     }
-    const channel = focusedChannel
+    const uuids = activeUuids.split('|')
     let cancelled = false
     async function poll(): Promise<void> {
-      try {
-        const body = await getJson<NowNextPayload>(`/api/epg/now-next?uuid=${encodeURIComponent(channel.uuid)}`)
-        if (!cancelled) setNowNext(body)
-      } catch {
-        if (!cancelled) setNowNext(null)
+      const pairs = await Promise.all(
+        uuids.map(async (uuid) => {
+          try {
+            return [uuid, await getJson<NowNextPayload>(`/api/epg/now-next?uuid=${encodeURIComponent(uuid)}`)] as const
+          } catch {
+            return [uuid, null] as const
+          }
+        })
+      )
+      if (cancelled) return
+      const map: Record<string, NowNextPayload> = {}
+      for (const [uuid, payload] of pairs) {
+        if (payload !== null) map[uuid] = payload
       }
+      setNowNextByUuid(map)
     }
     void poll()
     const timer = window.setInterval(() => void poll(), 30_000)
@@ -153,7 +178,8 @@ export default function WatchView(): React.JSX.Element {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [focusedChannel])
+  }, [activeUuids])
+  const focusedNowNext = focusedUuid !== null ? nowNextByUuid[focusedUuid] ?? null : null
 
   // ---- Programme search: the sidebar needle searches the guide too (debounced) ----
   const [programmeHits, setProgrammeHits] = useState<ProgrammeHit[] | null>(null)
@@ -181,6 +207,20 @@ export default function WatchView(): React.JSX.Element {
 
   function tune(channel: Channel): void {
     setTiles((prev) => assignChannel(prev, channel))
+  }
+
+  // ---- Picture-in-Picture for the focused tile (Safari's webkit mode covered in the helper) ----
+  const [pipAvailable] = useState(
+    () => typeof document !== 'undefined' && (document.pictureInPictureEnabled === true || 'webkitSupportsPictureInPicture' in document)
+  )
+  async function togglePip(): Promise<void> {
+    const video = players[tiles.focused].getVideoEl()
+    if (video === null) return
+    try {
+      await togglePictureInPicture(video)
+    } catch {
+      // The browser refused (rare — e.g. mid-fullscreen transition); nothing sensible to show.
+    }
   }
 
   // ---- Keyboard zapping (TV style): ↑/↓ ±1, PgUp/PgDn ±5, digits = number entry with a
@@ -212,6 +252,13 @@ export default function WatchView(): React.JSX.Element {
         event.preventDefault()
         const delta = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : event.key === 'PageUp' ? -5 : 5
         setTiles((prev) => zapFocused(prev, lineup, delta, zapStep))
+        return
+      }
+      if (event.key === 'z' || event.key === 'Backspace') {
+        // "Back" on a remote: return the focused tile to the channel it just left.
+        event.preventDefault()
+        const back = toggledChannel(lineup, lastChannelRef.current)
+        if (back !== null) setTiles((prev) => assignChannel(prev, back))
         return
       }
       if (/^[0-9]$/.test(event.key)) {
@@ -248,17 +295,21 @@ export default function WatchView(): React.JSX.Element {
   const byUuid = useMemo(() => new Map((channels ?? []).map((c) => [c.uuid, c])), [channels])
 
   // Sidebar sections: ★ favorites pinned, then recently watched, then the rest — only when
-  // not filtering; a filter shows one flat matching list.
+  // not filtering; a filter shows one flat matching list. Names match the needle; a purely
+  // numeric needle also matches channel numbers by prefix ("10" finds channel 101…109, 100x).
   const sections = useMemo(() => {
     const all = channels ?? []
     if (filtering) {
       const needle = search.trim().toLowerCase()
+      const needleIsNumber = /^\d+$/.test(needle)
       return [
         {
           label: null,
           items: all.filter((ch) => {
             if (group !== 'all' && ch.group_name !== group) return false
-            return needle === '' || ch.name.toLowerCase().includes(needle)
+            if (needle === '') return true
+            if (ch.name.toLowerCase().includes(needle)) return true
+            return needleIsNumber && ch.channel_number !== null && String(ch.channel_number).startsWith(needle)
           })
         }
       ]
@@ -291,6 +342,7 @@ export default function WatchView(): React.JSX.Element {
     const channel = activeChannel(index)
     const isFocused = tiles.focused === index
     const multi = tiles.count > 1
+    const tileNow = channel !== null ? nowNextByUuid[channel.uuid]?.now ?? null : null
     return (
       <div
         className={`watch-tile${isFocused ? ' watch-tile-focused' : ''}${multi ? '' : ' watch-tile-solo'}`}
@@ -312,6 +364,7 @@ export default function WatchView(): React.JSX.Element {
           )}
           {multi && channel === null && <div className="tile-hint">Pick a channel to fill this tile.</div>}
           {multi && channel !== null && !player.audioOnly && <span className="tile-name">{channel.name}</span>}
+          {multi && channel !== null && !player.audioOnly && tileNow !== null && <span className="tile-now">{tileNow.title}</span>}
           {multi && channel !== null && !isFocused && <span className="tile-muted-badge">muted</span>}
           {multi && tileStatus(player.status, player.autoplayBlocked) !== '' && (
             <p className={`tile-status${player.status.kind === 'failed' ? ' tile-status-error' : ''}`}>
@@ -366,9 +419,18 @@ export default function WatchView(): React.JSX.Element {
                       <li key={ch.uuid} className="watch-channel-row">
                         <button
                           type="button"
-                          className={`watch-channel${onFocused ? ' watch-channel-active' : ''}${onAnyTile && !onFocused ? ' watch-channel-passive' : ''}`}
+                          className={`watch-channel${ch.logo_url !== null ? ' watch-channel-logoed' : ''}${onFocused ? ' watch-channel-active' : ''}${onAnyTile && !onFocused ? ' watch-channel-passive' : ''}`}
                           onClick={() => tune(ch)}
                         >
+                          {ch.logo_url !== null && (
+                            <img
+                              className="channel-logo"
+                              src={ch.logo_url}
+                              alt=""
+                              loading="lazy"
+                              onError={(e) => { e.currentTarget.style.visibility = 'hidden' }}
+                            />
+                          )}
                           <span className="channel-number">{ch.channel_number ?? ''}</span>
                           <span className="channel-name">{ch.name}</span>
                         </button>
@@ -449,13 +511,13 @@ export default function WatchView(): React.JSX.Element {
               ) : (
                 <>
                   <strong>{focusedChannel.name}</strong>
-                  {nowNext?.now != null && (
+                  {focusedNowNext?.now != null && (
                     <span className="muted-note">
-                      {' '}· now: {nowNext.now.title} ({formatClock(nowNext.now.start_utc)}–{formatClock(nowNext.now.stop_utc)})
+                      {' '}· now: {focusedNowNext.now.title} ({formatClock(focusedNowNext.now.start_utc)}–{formatClock(focusedNowNext.now.stop_utc)})
                     </span>
                   )}
-                  {nowNext?.next != null && (
-                    <span className="muted-note"> · next: {nowNext.next.title}</span>
+                  {focusedNowNext?.next != null && (
+                    <span className="muted-note"> · next: {focusedNowNext.next.title}</span>
                   )}
                 </>
               )}
@@ -513,6 +575,15 @@ export default function WatchView(): React.JSX.Element {
                   title="Back to one tile — the other streams stop"
                 >
                   Single
+                </button>
+              )}
+              {focusedChannel !== null && pipAvailable && (
+                <button
+                  type="button"
+                  onClick={() => void togglePip()}
+                  title="Pop the focused picture out into a floating window (Picture-in-Picture)"
+                >
+                  PiP
                 </button>
               )}
               {focusedChannel !== null && (

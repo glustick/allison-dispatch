@@ -79,6 +79,35 @@ export function isDolbyAudioCodec(codec: string | undefined): boolean {
   return /(^|[^a-z])e?ac-?3([^a-z]|$)/i.test(codec) || /dolby/i.test(codec)
 }
 
+// Picture-in-Picture for the focused tile. The standard API needs a user gesture (a click
+// provides one); Safari older than 16 only offers the webkit presentation-mode variant, so
+// both paths are attempted. Returns whether the video ended up IN PiP (true) or back in the
+// page (false); throws only when the browser refuses for a reason the user should see.
+export function isPictureInPictureSupported(video: HTMLVideoElement): boolean {
+  return typeof document.pictureInPictureEnabled === 'boolean' && document.pictureInPictureEnabled && typeof video.requestPictureInPicture === 'function'
+}
+
+export async function togglePictureInPicture(video: HTMLVideoElement): Promise<boolean> {
+  if (document.pictureInPictureElement === video) {
+    await document.exitPictureInPicture()
+    return false
+  }
+  if (isPictureInPictureSupported(video)) {
+    await video.requestPictureInPicture()
+    return true
+  }
+  const webkitVideo = video as HTMLVideoElement & {
+    webkitSetPresentationMode?: (mode: string) => Promise<void> | void
+    webkitGetPresentationMode?: () => string
+  }
+  if (typeof webkitVideo.webkitSetPresentationMode === 'function') {
+    const next = webkitVideo.webkitGetPresentationMode?.() === 'picture-in-picture' ? 'inline' : 'picture-in-picture'
+    await webkitVideo.webkitSetPresentationMode(next)
+    return next === 'picture-in-picture'
+  }
+  throw new Error('Picture-in-Picture is not supported in this browser')
+}
+
 // What mpegts.js MEDIA_INFO tells the viewer, as one decision: the codec footnote AND
 // whether this stream has any picture at all. Audio-only streams (the lineup's radio
 // channels ride the same relay) get a "Radio · codec" note and an audioOnly flag so the

@@ -44,3 +44,11 @@ export function resolveNumberExact(channels: Channel[], buffer: string): Channel
   if (buffer === '') return null
   return channels.find((c) => c.channel_number !== null && String(c.channel_number) === buffer) ?? null
 }
+
+// Last-channel back-jump (the remote's "back" button): the remembered channel, but only if
+// it is still a real member of the lineup — a channel that vanished in a re-sync must not
+// be tunable. Null when there is nowhere to jump back to.
+export function toggledChannel(channels: Channel[], rememberedUuid: string | null): Channel | null {
+  if (rememberedUuid === null) return null
+  return channels.find((c) => c.uuid === rememberedUuid) ?? null
+}

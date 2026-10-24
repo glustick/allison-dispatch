@@ -579,6 +579,38 @@ ul.watch-channel-list ul.watch-channel-list {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
 }
 
+/* Rows with a logo grow a leading column; the logo hides itself if the URL breaks. */
+.watch-channel-logoed {
+  grid-template-columns: 1.5rem 44px 1fr;
+  align-items: center;
+}
+
+.channel-logo {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 4px;
+  object-fit: contain;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* What's on right now, under the tile's channel name in multi-view. */
+.tile-now {
+  position: absolute;
+  top: 2.05rem;
+  left: 0.5rem;
+  z-index: 4;
+  background: rgba(0, 0, 0, 0.72);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 0.1rem 0.45rem;
+  font-size: 0.7rem;
+  max-width: calc(100% - 5rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 .zap-osd {
   position: absolute;
   top: 1rem;

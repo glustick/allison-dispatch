@@ -25,13 +25,17 @@ Users (create/delete/set password, last-admin and self-deletion guards); everyon
 change their own password there. Failed logins are throttled per IP (5 per 15 min).
 
 One **TV** screen (watch + guide + channels combined) plus **Settings**. The TV screen:
-resizable channel bar on the left (search + group filter), player with now/next on the
-right, and the EPG guide grid under the player (drag-to-pan, 3-hour steps, a **Prime time**
-jump and group/★ filters, now-line, programme detail — click any channel anywhere to tune).
-Panning refetches once the drag settles, not per pointer event. **Multi-view**: "+ Tile"
-grows the screen from one picture to a 2×2 grid of four concurrent streams; the focused tile
-carries audio and the zap keys, every tile has its own × close, and audio-only (radio)
-channels render a station card with logo and live equalizer bars instead of a black frame.
+resizable channel bar on the left (search + group filter, channel logos, numeric search —
+"150" finds the 1503+ block), player with now/next on the right, and the EPG guide grid
+under the player (drag-to-pan, 3-hour steps, a **Prime time** jump and group/★ filters,
+now-line, programme detail — click any channel anywhere to tune). Panning refetches once
+the drag settles, not per pointer event. **Multi-view**: "+ Tile" grows the screen from one
+picture to a 2×2 grid of four concurrent streams; the focused tile carries audio and the
+zap keys, every tile has its own × close, each tile shows what's on right now, and
+audio-only (radio) channels render a station card with logo and live equalizer bars instead
+of a black frame. TV-remote habits: ↑/↓/PgUp/PgDn and digit entry zap, **z/Backspace jumps
+back to the previous channel** (press again to toggle), and **PiP** pops the focused
+picture into a floating window.
 Playback always rides the BFF relay with the Dolby
 audio fix (ffmpeg video-copy + AC-3→AAC — every provider stream carries AC-3, so without
 it there is no audio; there is deliberately no toggle). Cold channels take ~8s to first

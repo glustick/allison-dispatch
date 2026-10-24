@@ -19,6 +19,8 @@ export interface StatusState {
 export interface LivePlayer {
   /** Callback ref for the tile's <video> element. */
   attachVideo: (el: HTMLVideoElement | null) => void
+  /** The tile's current <video> element, if one is attached (used for PiP on the focused tile). */
+  getVideoEl: () => HTMLVideoElement | null
   status: StatusState
   codecNote: string | null
   /** True once MEDIA_INFO shows a stream with audio but no video — the tile renders a radio card. */
@@ -55,6 +57,8 @@ export function useLivePlayer(channel: Channel | null, prefs: PlaybackPrefs, ini
     // autoplay without a gesture; the focused tile carries sound).
     if (el !== null) el.muted = mutedRef.current
   }, [])
+
+  const getVideoEl = useCallback((): HTMLVideoElement | null => videoRef.current, [])
 
   const setMuted = useCallback((m: boolean): void => {
     setMutedState(m)
@@ -189,5 +193,5 @@ export function useLivePlayer(channel: Channel | null, prefs: PlaybackPrefs, ini
   }, [])
   failureRef.current = handleFailure
 
-  return { attachVideo, status, codecNote, audioOnly, autoplayBlocked, muted, setMuted, restart }
+  return { attachVideo, getVideoEl, status, codecNote, audioOnly, autoplayBlocked, muted, setMuted, restart }
 }

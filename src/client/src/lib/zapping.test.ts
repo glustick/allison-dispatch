@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { appendDigit, resolveNumberExact, resolveNumberImmediate, zapStep } from './zapping.js'
+import { appendDigit, resolveNumberExact, resolveNumberImmediate, toggledChannel, zapStep } from './zapping.js'
 import type { Channel } from './api.js'
 
 function ch(uuid: string, channelNumber: number | null, name = uuid): Channel {
@@ -69,5 +69,19 @@ describe('number entry', () => {
   it('timeout resolution takes the exact match even when it was ambiguous mid-entry', () => {
     // "1" was held ambiguous by 17/100; a timeout with just "1" still lands on channel 1.
     expect(resolveNumberExact(LINEUP, '1')).toEqual(LINEUP[0])
+  })
+})
+
+describe('toggledChannel', () => {
+  it('jumps back to the remembered channel when it is still in the lineup', () => {
+    expect(toggledChannel(LINEUP, 'seventeen')?.uuid).toBe('seventeen')
+  })
+
+  it('refuses a channel that vanished in a re-sync', () => {
+    expect(toggledChannel(LINEUP, 'gone')).toBeNull()
+  })
+
+  it('has nowhere to go without a memory', () => {
+    expect(toggledChannel(LINEUP, null)).toBeNull()
   })
 })
