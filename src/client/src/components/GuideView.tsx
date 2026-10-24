@@ -360,6 +360,21 @@ export default function GuideView({
           {detail.programme.description !== null && <p>{detail.programme.description}</p>}
           <div className="toolbar">
             <button type="button" onClick={() => onWatch(detail.channel)}>Watch {detail.channel.name}</button>
+            {/* Catch-up: for anything that has already started, offer the replay. The server
+                refuses (with a clear error, shown by the player) channels whose provider
+                window can't serve that instant. */}
+            {detail.programme.start_utc < now && detail.channel.tvg_id != null && (
+              <button
+                type="button"
+                onClick={() => {
+                  onWatch({ ...detail.channel, catchupStartMs: detail.programme.start_utc })
+                  setDetail(null)
+                }}
+                title="Start a catch-up session from the beginning of this programme"
+              >
+                Watch from start
+              </button>
+            )}
             {detailIsFuture && detailKey !== null && (
               <button
                 type="button"

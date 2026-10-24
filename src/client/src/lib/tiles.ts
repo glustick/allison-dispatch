@@ -15,6 +15,13 @@ export interface TileState {
 
 export const INITIAL_TILES: TileState = { count: 1, channels: [null], focused: 0 }
 
+// Two channels are the same tile occupant only when they are the same channel AND the same
+// playback mode: a catch-up session of channel A is not "already on a tile" when the viewer
+// clicks live A — that click means "switch this watching back to live".
+function sameTileChannel(a: Channel | null, b: Channel): boolean {
+  return a !== null && a.uuid === b.uuid && a.catchupStartMs === b.catchupStartMs
+}
+
 export function addTile(s: TileState): TileState {
   if (s.count >= MAX_TILES) return s
   return { count: s.count + 1, channels: [...s.channels, null], focused: s.focused }
@@ -47,9 +54,9 @@ export function focusTile(s: TileState, index: number): TileState {
  */
 export function assignChannel(s: TileState, channel: Channel): TileState {
   if (s.count === 1) {
-    return s.channels[0]?.uuid === channel.uuid ? s : { ...s, channels: [channel] }
+    return sameTileChannel(s.channels[0], channel) ? s : { ...s, channels: [channel] }
   }
-  const showing = s.channels.findIndex((c) => c?.uuid === channel.uuid)
+  const showing = s.channels.findIndex((c) => sameTileChannel(c, channel))
   if (showing !== -1) return focusTile(s, showing)
   const focusedEmpty = s.channels[s.focused] === null
   const channels = [...s.channels]

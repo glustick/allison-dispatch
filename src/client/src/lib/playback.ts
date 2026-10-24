@@ -35,9 +35,10 @@ const DEFAULT_PREFS: PlaybackPrefs = { format: 'mpegts', maxHeight: null }
 // this; the relay re-encodes audio to AAC and copies the video untouched. The quality cap
 // is the one deliberate exception: it swaps video-copy for a capped re-encode.
 
-export async function fetchPlayInfo(uuid: string, format: OutputFormat, maxHeight: number | null): Promise<PlayInfo> {
+export async function fetchPlayInfo(uuid: string, format: OutputFormat, maxHeight: number | null, catchupStartMs?: number): Promise<PlayInfo> {
   const cap = maxHeight !== null ? `&max_height=${maxHeight}` : ''
-  return getJson<PlayInfo>(`/api/channels/${encodeURIComponent(uuid)}/play?output_format=${format}${cap}`)
+  const start = catchupStartMs !== undefined ? `&start=${catchupStartMs}` : ''
+  return getJson<PlayInfo>(`/api/channels/${encodeURIComponent(uuid)}/play?output_format=${format}${cap}${start}`)
 }
 
 export function loadPrefs(): PlaybackPrefs {

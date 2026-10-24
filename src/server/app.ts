@@ -6,12 +6,14 @@ import type { AppConfig } from './config.js'
 import { normalizeDispatcharrUrl } from './config.js'
 import { readAppVersion } from './version.js'
 import { listChannels, nowNext, guideWindow, guideGrid, searchProgrammes, getSyncStates } from './queries.js'
-import { getSetting, setDispatcharrUrl, clearDispatcharrUrl, resolveDispatcharrUrl, SETTING_KEYS } from './settingsStore.js'
+import { getSetting, setSetting, setDispatcharrUrl, clearDispatcharrUrl, resolveDispatcharrUrl, resolveDispatcharrAccount, SETTING_KEYS } from './settingsStore.js'
 import { runSync, SyncFailure, type SyncSummary } from './sync.js'
 import { relayStream, buildStreamUrl, validateOutputFormat, validateMaxHeight, parseFixAudio } from './relay.js'
 import { addFavorite, removeFavorite, listFavorites, listRecents, recordWatch } from './userData.js'
 import { listReminders, addReminder, removeReminder, type ReminderRow } from './reminders.js'
 import { proxiedLogoUrl, proxyLogo } from './logoProxy.js'
+import { createDispatcharrAuth } from './dispatcharrAuth.js'
+import { createCatchupSession, CatchupFailure } from './catchup.js'
 import {
   createAuthContext,
   requireAuth,
@@ -116,6 +118,23 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
   // forgotten tabs can fork the host into CPU oblivion. The route answers 429 past the cap
   // (0 disables it — operator escape hatch).
   let activeRelays = 0
+
+  // Dispatcharr REST auth (catch-up), cached per resolved credentials so the token cache
+  // survives across requests; changing the account or base starts a fresh cache.
+  let dispatcharrAuthCache: {
+    key: string
+    auth: ReturnType<typeof createDispatcharrAuth>
+  } | null = null
+  function getDispatcharrAuth(base: string, account: { username: string; password: string }): ReturnType<typeof createDispatcharrAuth> {
+    const key = `${base}|${account.username}|${account.password}`
+    if (dispatcharrAuthCache === null || dispatcharrAuthCache.key !== key) {
+      dispatcharrAuthCache = {
+        key,
+        auth: createDispatcharrAuth({ baseUrl: base, username: account.username, password: account.password })
+      }
+    }
+    return dispatcharrAuthCache.auth
+  }
 
   // Unauthenticated — this is what a deploy verification hits (same pattern the sibling
   // uses on the NAS via Dockhand).
@@ -525,6 +544,43 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
       const relayParams: string[] = []
       if (format !== null) relayParams.push(`output_format=${format}`)
       if (maxHeight !== null) relayParams.push(`max_height=${maxHeight}`)
+      // A start query switches to catch-up: create a Dispatcharr session for that instant and
+      // hand back the catch-up relay path instead of the live one. The playback URL shape is
+      // deterministic (/proxy/catchup/<uuid>?session_id=<sid>), so nothing session-shaped
+      // needs server-side state.
+      const startRaw = typeof req.query.start === 'string' ? Number(req.query.start) : undefined
+      if (startRaw !== undefined) {
+        if (!Number.isInteger(startRaw) || startRaw <= 0 || startRaw > clock() + 60_000) {
+          res.status(400).json({ error: 'start must be an epoch-ms instant, not in the future' })
+          return
+        }
+        const account = resolveDispatcharrAccount(db, cfg.dispatcharrUsername, cfg.dispatcharrPassword)
+        if (account === null) {
+          res.status(400).json({ error: 'No Dispatcharr account configured — set it in Settings to use catch-up' })
+          return
+        }
+        const auth = getDispatcharrAuth(base, account)
+        createCatchupSession({ baseUrl: base, auth }, channel.uuid, startRaw)
+          .then((session) => {
+            res.json({
+              uuid: channel.uuid,
+              name: channel.name,
+              format,
+              max_height: maxHeight,
+              direct: `${base}${session.playbackUrl}`,
+              relay: `/api/relay/catchup/${channel.uuid}?session_id=${encodeURIComponent(session.sessionId)}`
+            })
+          })
+          .catch((err: unknown) => {
+            const status = err instanceof CatchupFailure ? err.status : 502
+            const message = err instanceof Error ? err.message : 'catch-up session failed'
+            if (status === 401) {
+              auth.reset() // stale/invalid credentials — force a clean login next time
+            }
+            res.status(status === 400 ? 400 : 502).json({ error: message })
+          })
+        return
+      }
       const relayQuery = relayParams.length > 0 ? `?${relayParams.join('&')}` : ''
       res.json({
         uuid: channel.uuid,
@@ -533,6 +589,49 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
         max_height: maxHeight,
         direct: buildStreamUrl(base, channel.uuid, format),
         relay: `/api/relay/stream/${channel.uuid}${relayQuery}`
+      })
+    })
+
+    // Catch-up relay: pipes a Dispatcharr catch-up session (the playback URL Dispatcharr
+    // returned for it) through the same audio-fix relay as live. The uuid must still be a
+    // known channel and the session id must be present; Dispatcharr enforces expiry itself.
+    app.get('/api/relay/catchup/:uuid', (req: Request, res: Response) => {
+      const sessionId = typeof req.query.session_id === 'string' ? req.query.session_id : ''
+      if (sessionId === '') {
+        res.status(400).json({ error: 'session_id query parameter is required' })
+        return
+      }
+      const base = resolveDispatcharrUrl(db, cfg.dispatcharrUrl)
+      if (base === null) {
+        res.status(400).json({ error: 'Dispatcharr URL is not configured' })
+        return
+      }
+      const fixAudio = parseFixAudio(req.query.fixaudio)
+      const watcher = (req as Request & { sessionUser?: { id: number } }).sessionUser
+      if (cfg.relayMaxStreams > 0 && activeRelays >= cfg.relayMaxStreams) {
+        res.status(429).json({ error: `Too many active streams (limit ${cfg.relayMaxStreams}) — stop one and try again` })
+        return
+      }
+      activeRelays++
+      relayStream(
+        { db, dispatcharrUrl: base, onStreamStart: (uuid) => recordWatch(db, watcher?.id ?? 0, uuid, Date.now()) },
+        req.params.uuid,
+        null,
+        res,
+        req,
+        fixAudio,
+        null,
+        `${base}/proxy/catchup/${req.params.uuid}?session_id=${encodeURIComponent(sessionId)}`
+      ).then((result) => {
+        if (!result.ok) {
+          if (!res.headersSent) res.status(result.status).json({ error: result.error })
+          else res.destroy()
+        }
+      }).catch(() => {
+        if (!res.headersSent) res.status(502).json({ error: 'relay failed' })
+        else res.destroy()
+      }).finally(() => {
+        activeRelays--
       })
     })
 
@@ -616,10 +715,33 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
 
     app.get('/api/settings', (_req: Request, res: Response) => {
       const fromSettings = getSetting(db, SETTING_KEYS.dispatcharrUrl)
+      const account = resolveDispatcharrAccount(db, cfg.dispatcharrUsername, cfg.dispatcharrPassword)
+      const accountFromSettings = getSetting(db, SETTING_KEYS.dispatcharrUsername) !== null
       res.json({
         dispatcharrUrl: resolveDispatcharrUrl(db, cfg.dispatcharrUrl),
-        source: fromSettings !== null ? 'settings' : cfg.dispatcharrUrl !== null ? 'env' : null
+        source: fromSettings !== null ? 'settings' : cfg.dispatcharrUrl !== null ? 'env' : null,
+        // The password itself never leaves the server — the UI only learns whether it is set.
+        account: account !== null ? { username: account.username, passwordSet: true, source: accountFromSettings ? 'settings' : 'env' } : null
       })
+    })
+
+    // The Dispatcharr REST account powers catch-up. Admin-only: it is a credential.
+    app.put('/api/settings/account', requireAdmin, (req: Request, res: Response) => {
+      const body = req.body as { username?: unknown; password?: unknown } | undefined
+      if (body === undefined || typeof body.username !== 'string' || body.username.trim() === '' || typeof body.password !== 'string' || body.password === '') {
+        res.status(400).json({ error: 'username and password are required' })
+        return
+      }
+      setSetting(db, SETTING_KEYS.dispatcharrUsername, body.username.trim())
+      setSetting(db, SETTING_KEYS.dispatcharrPassword, body.password)
+      dispatcharrAuthCache = null // force fresh logins under the new credentials
+      res.json({ ok: true })
+    })
+
+    app.delete('/api/settings/account', requireAdmin, (_req: Request, res: Response) => {
+      db.prepare('DELETE FROM settings WHERE key = ? OR key = ?').run(SETTING_KEYS.dispatcharrUsername, SETTING_KEYS.dispatcharrPassword)
+      dispatcharrAuthCache = null
+      res.json({ ok: true })
     })
 
     app.put('/api/settings', (req: Request, res: Response) => {

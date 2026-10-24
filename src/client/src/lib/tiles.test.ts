@@ -148,4 +148,17 @@ describe('tiles', () => {
   it('MAX_TILES matches the 2×2 grid the CSS can express', () => {
     expect(MAX_TILES).toBe(4)
   })
+
+  it('a catch-up session and live count as different occupants of the same channel', () => {
+    const catchup = { ...A, catchupStartMs: 1234 }
+    // single mode: clicking live while watching the catch-up session retunes to live
+    let s: TileState = { ...INITIAL_TILES, channels: [catchup] }
+    s = assignChannel(s, A)
+    expect(s.channels[0]?.catchupStartMs).toBeUndefined()
+    // and back again: the catch-up copy replaces the live one
+    s = assignChannel(s, catchup)
+    expect(s.channels[0]?.catchupStartMs).toBe(1234)
+    // re-clicking the same catch-up session is a no-op (just focus)
+    expect(assignChannel(s, { ...A, catchupStartMs: 1234 })).toBe(s)
+  })
 })

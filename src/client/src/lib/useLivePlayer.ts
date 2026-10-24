@@ -109,7 +109,7 @@ export function useLivePlayer(channel: Channel | null, prefs: PlaybackPrefs, ini
       setAudioOnly(false)
       monitor.reset()
       try {
-        const info = await fetchPlayInfo(channel.uuid, prefsRef.current.format, prefsRef.current.maxHeight)
+        const info = await fetchPlayInfo(channel.uuid, prefsRef.current.format, prefsRef.current.maxHeight, channel.catchupStartMs)
         if (disposed) return
         if (!mpegts.isSupported()) {
           setStatus({ kind: 'failed', message: 'This browser cannot play live MPEG-TS (Media Source Extensions unsupported).' })
@@ -172,10 +172,11 @@ export function useLivePlayer(channel: Channel | null, prefs: PlaybackPrefs, ini
       }
       player = null
     }
-    // The effect intentionally keys on channel/format/quality/restart only — status updates
+    // The effect intentionally keys on channel/codec facts/restart only — status updates
     // and the retry budget flow through refs and setters that stay stable across re-runs.
-    // A quality change restarts the stream (restart-for-quality, like the sibling app).
-  }, [channel?.uuid, prefs.format, prefs.maxHeight, gen])
+    // A quality change restarts the stream (restart-for-quality, like the sibling app);
+    // so does a catch-up marker appearing on the channel (live ↔ watch-from-start).
+  }, [channel?.uuid, channel?.catchupStartMs, prefs.format, prefs.maxHeight, gen])
 
   // Retry budget: per channel selection, shared by stall + error paths.
   useEffect(() => {

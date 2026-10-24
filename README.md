@@ -42,7 +42,12 @@ picture into a floating window; **?** (or the ? button) lists every shortcut. Th
 tile is what the OS media controls show (programme, channel, logo — hardware media keys
 zap and pause), the tab title names the channel, and failed streams offer a **Try again**
 button after the player's own retry budget is spent. The guide's programme detail has a
-**Remind me** toggle — when a reminded programme starts, a toast offers one-click Watch.
+**Remind me** toggle — when a reminded programme starts, a toast offers one-click Watch —
+and **Watch from start** for anything already under way: it opens a Dispatcharr catch-up
+session (REST account configured by an admin in Settings → Dispatcharr account; 239 of the
+current 424 channels support catch-up, 2–3 day windows) and replays from the programme's
+beginning through the same audio-fix relay, marked with a ⏪ badge (clicking the channel
+again returns to live).
 The app is **installable** (PWA
 manifest + icons; the service worker is a deliberate no-op — caching would pin viewers to
 stale bundles).

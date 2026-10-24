@@ -10,6 +10,12 @@ export interface AppConfig {
    */
   dispatcharrUrl: string | null
   /**
+   * Dispatcharr REST account used for catch-up sessions. Null until configured (env or the
+   * Settings UI); catch-up answers 400 while unset.
+   */
+  dispatcharrUsername: string | null
+  dispatcharrPassword: string | null
+  /**
    * Cap on concurrent relayed streams (each spawns an ffmpeg on the host). 0 disables the
    * cap — an operator escape hatch, not the default. Beyond the cap the relay route
    * answers 429 so a stuck tab can't fork the host into oblivion. Default 4 = one viewer's
@@ -66,6 +72,10 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     dataDir: env.DATA_DIR?.trim() ? path.resolve(env.DATA_DIR) : path.resolve('data'),
     publicDir: env.PUBLIC_DIR?.trim() ? path.resolve(env.PUBLIC_DIR) : path.resolve('public'),
     dispatcharrUrl: rawDispatcharrUrl ? normalizeDispatcharrUrl(rawDispatcharrUrl) : null,
+    // Dispatcharr REST account (catch-up). Env is the compose-file default; the Settings UI
+    // override lives in the settings table (same precedence as the URL).
+    dispatcharrUsername: env.DISPATCHARR_USERNAME?.trim() ? env.DISPATCHARR_USERNAME.trim() : null,
+    dispatcharrPassword: env.DISPATCHARR_PASSWORD?.trim() ? env.DISPATCHARR_PASSWORD.trim() : null,
     relayMaxStreams: parseIntEnv('RELAY_MAX_STREAMS', env.RELAY_MAX_STREAMS?.trim(), 4, 0),
     backupKeep: parseIntEnv('BACKUP_KEEP', env.BACKUP_KEEP?.trim(), 7, 1)
   }

@@ -6,6 +6,12 @@ export interface Channel {
   tvg_name: string | null
   logo_url: string | null
   group_name: string | null
+  /**
+   * Client-only marker: when set, this tile plays a CATCH-UP session of the channel from
+   * that epoch-ms instant instead of live. The server never sends it — the guide stamps it
+   * onto a channel copy when the viewer picks "Watch from start".
+   */
+  catchupStartMs?: number
 }
 
 export interface ChannelsResponse {
@@ -48,6 +54,8 @@ export interface SyncStatusResponse {
 export interface SettingsResponse {
   dispatcharrUrl: string | null
   source: 'settings' | 'env' | null
+  /** The Dispatcharr REST account (catch-up); the password itself is never returned. */
+  account: { username: string; passwordSet: boolean; source: 'settings' | 'env' } | null
 }
 
 export interface ConnectionTestResult {

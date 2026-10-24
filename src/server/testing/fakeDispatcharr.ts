@@ -39,6 +39,8 @@ export interface FakeDispatcharrOptions {
   streamLifetimeMs?: number | null
   /** When set, stream responses loop this file's bytes (a real TS fixture) instead of sync-byte filler — used by the audio-fix tests, which need ffmpeg-parseable input. */
   streamFile?: string
+  /** When set, the fake serves the JWT + catch-up REST surface with these credentials (probed live on v0.31.0: /api/accounts/token/, /api/catchup/sessions/, /proxy/catchup/…). */
+  account?: { username: string; password: string }
 }
 
 function sendSpaIndex(res: ServerResponse): void {
@@ -59,6 +61,37 @@ export async function startFakeDispatcharr(opts: FakeDispatcharrOptions): Promis
   const channels = opts.channels ?? DEFAULT_FAKE_CHANNELS
   const requests: FakeDispatcharr['requests'] = []
   const streams: FakeDispatcharr['streams'] = { opened: 0, open: 0, closed: 0, bytesSent: 0 }
+  // JWT + catch-up surface state (only active when opts.account is set): issued tokens and
+  // live catch-up sessions, so tests can prove the real token/session discipline.
+  const issuedAccess = new Set<string>()
+  const issuedRefresh = new Set<string>()
+  const sessions = new Map<string, string>() // session_id → channel_uuid
+  let tokenSeq = 0
+
+  function fakeJwt(tokenType: 'access' | 'refresh', lifetimeSec: number): string {
+    tokenSeq++
+    const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url')
+    const payload = Buffer.from(
+      JSON.stringify({ token_type: tokenType, exp: Math.floor(opts.now.getTime() / 1000) + lifetimeSec, iat: Math.floor(opts.now.getTime() / 1000), jti: `fake-${tokenSeq}`, user_id: '1' })
+    ).toString('base64url')
+    return `${header}.${payload}.fake-signature-${tokenSeq}`
+  }
+
+  function readBody(req: IncomingMessage): Promise<string> {
+    return new Promise((resolve) => {
+      const chunks: Buffer[] = []
+      req.on('data', (c: Buffer) => chunks.push(c))
+      req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+      req.on('error', () => resolve(''))
+    })
+  }
+
+  function bearerToken(req: IncomingMessage): string | null {
+    const header = req.headers.authorization ?? ''
+    const match = /^Bearer (.+)$/.exec(header)
+    return match === null ? null : match[1]
+  }
+
   const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const method = req.method ?? 'GET'
     const reqUrl = new URL(req.url ?? '/', 'http://fake.invalid')
@@ -68,6 +101,83 @@ export async function startFakeDispatcharr(opts: FakeDispatcharrOptions): Promis
     requests.push({ method, path: reqUrl.pathname })
 
     if (method !== 'GET') {
+      // ---- JWT + catch-up POST surface (wire-level mirror of the probed v0.31.0 API) ----
+      if (opts.account !== undefined && method === 'POST') {
+        if (reqUrl.pathname === '/api/accounts/token/' || reqUrl.pathname === '/api/accounts/token/refresh/') {
+          void readBody(req).then((raw) => {
+            let body: Record<string, unknown> = {}
+            try {
+              body = JSON.parse(raw) as Record<string, unknown>
+            } catch {
+              // malformed body → 400 below
+            }
+            if (reqUrl.pathname === '/api/accounts/token/') {
+              if (body.username !== opts.account?.username || body.password !== opts.account?.password) {
+                res.writeHead(401, { 'Content-Type': 'application/json' })
+                res.end(JSON.stringify({ detail: 'No active account found with the given credentials' }))
+                return
+              }
+              const access = fakeJwt('access', 1800)
+              const refresh = fakeJwt('refresh', 86_400)
+              issuedAccess.add(access)
+              issuedRefresh.add(refresh)
+              res.writeHead(200, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ access, refresh }))
+              return
+            }
+            // refresh endpoint
+            if (typeof body.refresh !== 'string' || !issuedRefresh.has(body.refresh)) {
+              res.writeHead(401, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ detail: 'Token is invalid or expired' }))
+              return
+            }
+            const access = fakeJwt('access', 1800)
+            issuedAccess.add(access)
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ access }))
+          })
+          return
+        }
+        if (reqUrl.pathname === '/api/catchup/sessions/') {
+          void readBody(req).then((raw) => {
+            const token = bearerToken(req)
+            if (token === null || !issuedAccess.has(token)) {
+              res.writeHead(401, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ detail: 'Authentication credentials were not provided or were invalid.' }))
+              return
+            }
+            let body: Record<string, unknown> = {}
+            try {
+              body = JSON.parse(raw) as Record<string, unknown>
+            } catch {
+              // malformed body → 400 below
+            }
+            const channel = channels.find((c) => c.uuid === body.channel_uuid)
+            if (typeof body.channel_uuid !== 'string' || channel === undefined) {
+              res.writeHead(400, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ channel_uuid: ['This field is required.'], start: ['This field is required.'] }))
+              return
+            }
+            if (typeof body.start !== 'string' || Number.isNaN(Date.parse(body.start))) {
+              res.writeHead(400, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ start: ['A valid datetime is required.'] }))
+              return
+            }
+            const sessionId = `fake-session-${tokenSeq}-${sessions.size}`
+            sessions.set(sessionId, channel.uuid)
+            res.writeHead(201, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({
+              session_id: sessionId,
+              playback_url: `/proxy/catchup/${channel.uuid}?session_id=${sessionId}`,
+              expires_at: Math.floor(opts.now.getTime() / 1000) + 900,
+              channel_uuid: channel.uuid,
+              start: body.start,
+              duration: null
+            }))
+          })
+          return
+        }
+      }
       res.writeHead(405, { 'Content-Type': 'text/plain' })
       res.end('method not allowed')
       return
@@ -97,6 +207,41 @@ export async function startFakeDispatcharr(opts: FakeDispatcharrOptions): Promis
     if (logoMatch) {
       res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': FAKE_LOGO_PNG.length })
       res.end(FAKE_LOGO_PNG)
+      return
+    }
+
+    if (reqUrl.pathname.startsWith('/proxy/catchup/')) {
+      // Catch-up playback: the session id is the capability (no auth, like the real thing).
+      // Serves the same byte loop as the live stream — the relay path is identical plumbing.
+      const match = /^\/proxy\/catchup\/([0-9a-fA-F-]+)$/.exec(reqUrl.pathname)
+      const sessionId = reqUrl.searchParams.get('session_id')
+      if (match === null || sessionId === null || !sessions.has(sessionId)) {
+        res.writeHead(404, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ detail: 'No such catch-up session.' }))
+        return
+      }
+      streams.opened++
+      streams.open++
+      res.writeHead(200, { 'Content-Type': 'video/mp2t' })
+      const loopBuf = opts.streamFile !== undefined ? readFileSync(opts.streamFile) : null
+      const chunk = loopBuf ?? Buffer.alloc(188 * 4, 0x47)
+      let pos = 0
+      const timer = setInterval(() => {
+        if (loopBuf !== null) {
+          const end = Math.min(pos + 188 * 16, loopBuf.length)
+          res.write(loopBuf.subarray(pos, end))
+          streams.bytesSent += end - pos
+          pos = end >= loopBuf.length ? 0 : end
+        } else {
+          res.write(chunk)
+          streams.bytesSent += chunk.length
+        }
+      }, 20)
+      res.on('close', () => {
+        clearInterval(timer)
+        streams.open--
+        streams.closed++
+      })
       return
     }
 

@@ -194,6 +194,11 @@ export default function SettingsView({ currentUser }: { currentUser: SettingsUse
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null)
   const [syncStatus, setSyncStatus] = useState<SyncStatusResponse | null>(null)
   const [busy, setBusy] = useState<'save' | 'test' | 'sync' | null>(null)
+  // The Dispatcharr REST account (catch-up): admin-managed, password write-only.
+  const [account, setAccount] = useState<SettingsResponse['account']>(null)
+  const [accountUser, setAccountUser] = useState('')
+  const [accountPass, setAccountPass] = useState('')
+  const [accountBusy, setAccountBusy] = useState(false)
 
   const loadStatus = useCallback(async (): Promise<void> => {
     try {
@@ -210,6 +215,8 @@ export default function SettingsView({ currentUser }: { currentUser: SettingsUse
         setLoadedUrl(settings.dispatcharrUrl)
         setSource(settings.source)
         if (settings.source === 'env' && settings.dispatcharrUrl !== null) setUrlInput(settings.dispatcharrUrl)
+        setAccount(settings.account)
+        if (settings.account !== null) setAccountUser(settings.account.username)
       } catch (err) {
         setNotice(err instanceof Error ? err.message : String(err))
       }
@@ -269,6 +276,37 @@ export default function SettingsView({ currentUser }: { currentUser: SettingsUse
     }
   }
 
+  async function saveAccount(): Promise<void> {
+    setAccountBusy(true)
+    setNotice(null)
+    try {
+      await sendJson('/api/settings/account', 'PUT', { username: accountUser.trim(), password: accountPass })
+      setAccountPass('')
+      const settings = await getJson<SettingsResponse>('/api/settings')
+      setAccount(settings.account)
+      setNotice('Dispatcharr account saved — catch-up is available.')
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : String(err))
+    } finally {
+      setAccountBusy(false)
+    }
+  }
+
+  async function clearAccount(): Promise<void> {
+    setAccountBusy(true)
+    setNotice(null)
+    try {
+      await sendJson('/api/settings/account', 'DELETE')
+      const settings = await getJson<SettingsResponse>('/api/settings')
+      setAccount(settings.account)
+      setNotice('Stored account cleared.')
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : String(err))
+    } finally {
+      setAccountBusy(false)
+    }
+  }
+
   return (
     <section className="view">
       <div className="card">
@@ -306,6 +344,48 @@ export default function SettingsView({ currentUser }: { currentUser: SettingsUse
         )}
         {notice !== null && <p className="ok-note">{notice}</p>}
       </div>
+
+      {currentUser.isAdmin && (
+        <div className="card">
+          <h2>Dispatcharr account</h2>
+          <p className="muted-note">
+            The REST account used for catch-up ("Watch from start" in the guide).{' '}
+            {account === null
+              ? 'Not configured — catch-up is unavailable.'
+              : `Configured for ${account.username} (${account.source === 'env' ? 'from the environment' : 'stored in settings'}).`}
+          </p>
+          <div className="toolbar">
+            <input
+              type="text"
+              placeholder="Dispatcharr username"
+              value={accountUser}
+              onChange={(e) => setAccountUser(e.target.value)}
+              aria-label="Dispatcharr username"
+            />
+            <input
+              type="password"
+              placeholder={account !== null ? 'Password is set — type to replace' : 'Dispatcharr password'}
+              value={accountPass}
+              onChange={(e) => setAccountPass(e.target.value)}
+              aria-label="Dispatcharr password"
+            />
+          </div>
+          <div className="toolbar">
+            <button
+              type="button"
+              disabled={accountBusy || accountUser.trim() === '' || accountPass === ''}
+              onClick={() => void saveAccount()}
+            >
+              {accountBusy ? 'Saving…' : 'Save account'}
+            </button>
+            {account !== null && account.source === 'settings' && (
+              <button type="button" disabled={accountBusy} onClick={() => void clearAccount()}>
+                Clear stored account
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="card">
         <h2>Sync status</h2>

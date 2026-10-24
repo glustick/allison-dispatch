@@ -717,6 +717,25 @@ ul.watch-channel-list ul.watch-channel-list {
   color: var(--accent);
 }
 
+/* Catch-up mode marker on a tile that is replaying instead of live. */
+.tile-catchup {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 4;
+  background: color-mix(in srgb, var(--accent) 82%, #000);
+  color: #fff;
+  border-radius: 6px;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.75rem;
+  pointer-events: none;
+}
+
+/* In multi-view the channel name yields the top-left corner to the catch-up badge. */
+.tile-name-catchup {
+  top: 2.4rem;
+}
+
 .zap-osd {
   position: absolute;
   top: 1rem;

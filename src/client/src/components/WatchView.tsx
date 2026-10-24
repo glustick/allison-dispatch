@@ -448,8 +448,15 @@ export default function WatchView(): React.JSX.Element {
               </span>
             </div>
           )}
+          {channel?.catchupStartMs != null && (
+            <span className="tile-catchup" title={`Catch-up from ${new Date(channel.catchupStartMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}>
+              ⏪ catch-up
+            </span>
+          )}
           {multi && channel === null && <div className="tile-hint">Pick a channel to fill this tile.</div>}
-          {multi && channel !== null && !player.audioOnly && <span className="tile-name">{channel.name}</span>}
+          {multi && channel !== null && !player.audioOnly && (
+            <span className={`tile-name${channel.catchupStartMs != null ? ' tile-name-catchup' : ''}`}>{channel.name}</span>
+          )}
           {multi && channel !== null && !player.audioOnly && tileNow !== null && <span className="tile-now">{tileNow.title}</span>}
           {multi && channel !== null && !isFocused && <span className="tile-muted-badge">muted</span>}
           {multi && tileStatus(player.status, player.autoplayBlocked) !== '' && (

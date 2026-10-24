@@ -127,7 +127,7 @@ function spawnAudioFixer(onFfmpegSpawn: ((proc: ChildProcess) => void) | undefin
   return ff
 }
 
-export async function relayStream(deps: RelayDeps, uuid: string, format: 'mpegts' | 'fmp4' | null, clientRes: ServerResponse, clientReq?: IncomingMessage, fixAudio = false, maxHeight: number | null = null): Promise<RelayResult> {
+export async function relayStream(deps: RelayDeps, uuid: string, format: 'mpegts' | 'fmp4' | null, clientRes: ServerResponse, clientReq?: IncomingMessage, fixAudio = false, maxHeight: number | null = null, upstreamUrlOverride?: string): Promise<RelayResult> {
   const fetchImpl = deps.fetchImpl ?? fetch
   const known = deps.db.prepare('SELECT 1 FROM channels WHERE uuid = ?').get(uuid)
   if (!known) {
@@ -138,9 +138,12 @@ export async function relayStream(deps: RelayDeps, uuid: string, format: 'mpegts
   const connectTimeoutMs = deps.connectTimeoutMs ?? 15_000
   const connectTimer = setTimeout(() => upstreamController.abort(), connectTimeoutMs)
 
+  // Catch-up streams arrive as a full upstream URL (the session's playback_url on the
+  // Dispatcharr origin); live streams build the usual proxy URL from the uuid.
+  const upstreamTarget = upstreamUrlOverride ?? buildStreamUrl(deps.dispatcharrUrl, uuid, format)
   let upstream: Response
   try {
-    upstream = await fetchImpl(buildStreamUrl(deps.dispatcharrUrl, uuid, format), {
+    upstream = await fetchImpl(upstreamTarget, {
       signal: upstreamController.signal,
       // No credentials (Dispatcharr stream URLs are unauthenticated in v1) and no custom
       // Accept header — the live probe showed Dispatcharr answers 406 to `accept:
