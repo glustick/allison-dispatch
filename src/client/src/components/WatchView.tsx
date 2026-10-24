@@ -3,7 +3,7 @@ import { getJson, type Channel, type ChannelsResponse, type ProgrammeHit, type P
 import { appendDigit, resolveNumberExact, resolveNumberImmediate, zapStep } from '../lib/zapping.js'
 import { loadPrefs, savePrefs, type OutputFormat, type PlaybackPrefs } from '../lib/playback.js'
 import { useLivePlayer } from '../lib/useLivePlayer.js'
-import { assignChannel, enterSplit, exitSplit, focusTile, INITIAL_TILES, stopTile, zapFocused, type TileState } from '../lib/tiles.js'
+import { addTile, assignChannel, collapseToSingle, focusTile, INITIAL_TILES, MAX_TILES, removeTile, stopTile, zapFocused, type TileState } from '../lib/tiles.js'
 import GuideView from './GuideView.js'
 import { loadSavedDimension, saveDimension, useResizableDimension } from '../lib/useResizableDimension.js'
 
@@ -28,10 +28,12 @@ function formatClock(epochMs: number): string {
 // Playback always rides the BFF relay with the Dolby audio fix on (no toggle: without it
 // there is no audio at all — every provider stream carries AC-3).
 //
-// Multi-view: "Split" opens a second tile (two concurrent relay streams — inside the server's
-// RELAY_MAX_STREAMS cap). Exactly one tile is focused: it carries the audio, the zap keys and
-// the now/next bar; the other is muted. Tile placement rules live in lib/tiles.ts — filling
-// the second slot never steals audio from what's being watched.
+// Multi-view: "+ Tile" grows the grid from one picture to a 2×2 of four concurrent relay
+// streams (inside the server's RELAY_MAX_STREAMS cap, raised to match). Exactly one tile is
+// focused: it carries the audio, the zap keys and the now/next bar; the others are muted.
+// Tile placement rules live in lib/tiles.ts — filling an empty side slot never steals audio
+// from what's being watched. Audio-only streams (radio channels) render a radio card with
+// the channel logo instead of a black rectangle — the <video> element is still the engine.
 export default function WatchView(): React.JSX.Element {
   const [channels, setChannels] = useState<Channel[] | null>(null)
   const [search, setSearch] = useState('')
@@ -41,13 +43,18 @@ export default function WatchView(): React.JSX.Element {
   const [nowNext, setNowNext] = useState<NowNextPayload | null>(null)
   const [digitBuffer, setDigitBuffer] = useState<string | null>(null)
 
-  const main = tiles.channels[0]
-  const second = tiles.split ? tiles.channels[1] : null
-  const focusedChannel = tiles.channels[tiles.focused]
-  // Tile 1 mounts muted: a muted video autoplays without a gesture; focusing it (a click)
+  const activeChannel = (index: number): Channel | null => (index < tiles.count ? tiles.channels[index] ?? null : null)
+  const main = activeChannel(0)
+  const focusedChannel = activeChannel(tiles.focused)
+  // Tiles 1+ mount muted: a muted video autoplays without a gesture; focusing one (a click)
   // is the gesture that unmutes. The audio-sync effect below keeps this true on every change.
-  const mainPlayer = useLivePlayer(main, prefs)
-  const secondPlayer = useLivePlayer(second, prefs, true)
+  // All MAX_TILES hooks exist for the session — an unused one sits idle on a null channel.
+  const players = [
+    useLivePlayer(activeChannel(0), prefs),
+    useLivePlayer(activeChannel(1), prefs, true),
+    useLivePlayer(activeChannel(2), prefs, true),
+    useLivePlayer(activeChannel(3), prefs, true)
+  ]
 
   // The channel bar is drag-resizable (min 200, max 480) and persisted, matching the
   // sibling's own resizable panels.
@@ -115,12 +122,14 @@ export default function WatchView(): React.JSX.Element {
   }
 
   // Audio follows focus: the focused tile is the only unmuted one (single mode = tile 0
-  // unmuted, exactly as before split existed). Hook setters are stable; the tile shapes
+  // unmuted, exactly as before tiles existed). Hook setters are stable; the tile shapes
   // below fully determine the audio map, so the hook objects stay out of the deps.
+  const activeUuids = tiles.channels.map((c) => c?.uuid ?? null).join('|')
   useEffect(() => {
-    mainPlayer.setMuted(!(tiles.split && tiles.focused === 1))
-    secondPlayer.setMuted(!(tiles.split && tiles.focused === 1))
-  }, [tiles.split, tiles.focused, main?.uuid, second?.uuid])
+    for (let i = 0; i < players.length; i++) {
+      players[i].setMuted(i !== tiles.focused)
+    }
+  }, [tiles.focused, tiles.count, activeUuids])
 
   // Now/next for the focused tile's channel.
   useEffect(() => {
@@ -266,9 +275,9 @@ export default function WatchView(): React.JSX.Element {
     return out
   }, [channels, favorites, recents, filtering, search, group, byUuid])
 
-  const focusedStatus = tiles.focused === 0 ? mainPlayer : secondPlayer
+  const focusedStatus = players[tiles.focused]
 
-  // A compact per-tile status line (split mode keeps banners out of the way).
+  // A compact per-tile status line (multi-tile mode keeps banners out of the way).
   function tileStatus(status: { kind: string; message: string | null }, autoplayBlocked: boolean): string {
     if (status.kind === 'failed') return status.message ?? 'Failed.'
     if (status.kind === 'reconnecting') return status.message ?? 'Reconnecting…'
@@ -277,25 +286,51 @@ export default function WatchView(): React.JSX.Element {
     return ''
   }
 
-  function renderTile(index: 0 | 1, player: ReturnType<typeof useLivePlayer>, channel: Channel | null): React.JSX.Element {
+  function renderTile(index: number): React.JSX.Element {
+    const player = players[index]
+    const channel = activeChannel(index)
     const isFocused = tiles.focused === index
+    const multi = tiles.count > 1
     return (
       <div
-        className={`watch-tile${isFocused ? ' watch-tile-focused' : ''}${tiles.split ? '' : ' watch-tile-solo'}`}
+        className={`watch-tile${isFocused ? ' watch-tile-focused' : ''}${multi ? '' : ' watch-tile-solo'}`}
         onClick={() => setTiles((s) => focusTile(s, index))}
-        role={tiles.split ? 'button' : undefined}
-        aria-label={tiles.split ? `Focus ${channel?.name ?? 'empty tile'}` : undefined}
+        role={multi ? 'button' : undefined}
+        aria-label={multi ? `Focus ${channel?.name ?? 'empty tile'}` : undefined}
       >
         <div className="video-frame">
           <video ref={player.attachVideo} controls playsInline className="watch-video" />
           {isFocused && digitBuffer !== null && digitBuffer !== '' && <div className="zap-osd">{digitBuffer}</div>}
-          {tiles.split && channel === null && <div className="tile-hint">Pick a channel to fill this tile.</div>}
-          {tiles.split && channel !== null && <span className="tile-name">{channel.name}</span>}
-          {tiles.split && channel !== null && !isFocused && <span className="tile-muted-badge">muted</span>}
-          {tiles.split && tileStatus(player.status, player.autoplayBlocked) !== '' && (
+          {player.audioOnly && channel !== null && (
+            <div className={`tile-radio${player.status.kind === 'playing' ? ' tile-radio-live' : ''}`} aria-hidden="true">
+              {channel.logo_url !== null && <img className="tile-radio-logo" src={channel.logo_url} alt="" loading="lazy" />}
+              <span className="tile-radio-name">{channel.name}</span>
+              <span className="tile-radio-bars">
+                <i /><i /><i /><i />
+              </span>
+            </div>
+          )}
+          {multi && channel === null && <div className="tile-hint">Pick a channel to fill this tile.</div>}
+          {multi && channel !== null && !player.audioOnly && <span className="tile-name">{channel.name}</span>}
+          {multi && channel !== null && !isFocused && <span className="tile-muted-badge">muted</span>}
+          {multi && tileStatus(player.status, player.autoplayBlocked) !== '' && (
             <p className={`tile-status${player.status.kind === 'failed' ? ' tile-status-error' : ''}`}>
               {tileStatus(player.status, player.autoplayBlocked)}
             </p>
+          )}
+          {multi && (
+            <button
+              type="button"
+              className="tile-close"
+              title="Close this tile"
+              aria-label={`Close ${channel?.name ?? 'empty tile'} tile`}
+              onClick={(e) => {
+                e.stopPropagation() // closing is not focusing
+                setTiles((s) => removeTile(s, index))
+              }}
+            >
+              ×
+            </button>
           )}
         </div>
       </div>
@@ -326,7 +361,7 @@ export default function WatchView(): React.JSX.Element {
                 <ul className="watch-channel-list">
                   {section.items.map((ch) => {
                     const onFocused = focusedChannel?.uuid === ch.uuid
-                    const onAnyTile = main?.uuid === ch.uuid || second?.uuid === ch.uuid
+                    const onAnyTile = tiles.channels.some((c) => c?.uuid === ch.uuid)
                     return (
                       <li key={ch.uuid} className="watch-channel-row">
                         <button
@@ -398,16 +433,18 @@ export default function WatchView(): React.JSX.Element {
         />
 
         <div className="watch-main">
-          <div className={tiles.split ? 'watch-tiles' : 'watch-tiles watch-tiles-single'}>
-            {renderTile(0, mainPlayer, main)}
-            {tiles.split && renderTile(1, secondPlayer, second)}
+          <div
+            className={tiles.count === 1 ? 'watch-tiles watch-tiles-single' : 'watch-tiles'}
+            data-count={tiles.count}
+          >
+            {Array.from({ length: tiles.count }, (_, i) => renderTile(i))}
           </div>
 
           <div className="watch-bar">
             <div className="watch-now-next">
               {focusedChannel === null ? (
                 <span className="muted-note">
-                  {tiles.split ? 'Click a tile, then pick a channel.' : 'Pick a channel to start watching.'}
+                  {tiles.count > 1 ? 'Click a tile, then pick a channel.' : 'Pick a channel to start watching.'}
                 </span>
               ) : (
                 <>
@@ -460,13 +497,22 @@ export default function WatchView(): React.JSX.Element {
                   <option value="fmp4">fMP4</option>
                 </select>
               </label>
-              {main !== null && (
+              {main !== null && tiles.count < MAX_TILES && (
                 <button
                   type="button"
-                  onClick={() => setTiles((s) => (s.split ? exitSplit(s) : enterSplit(s)))}
-                  title={tiles.split ? 'Back to one tile — the second stream stops' : 'Watch a second channel side by side'}
+                  onClick={() => setTiles((s) => addTile(s))}
+                  title={`Add another tile — up to ${MAX_TILES} channels at once`}
                 >
-                  {tiles.split ? 'Exit split' : 'Split'}
+                  + Tile
+                </button>
+              )}
+              {tiles.count > 1 && (
+                <button
+                  type="button"
+                  onClick={() => setTiles((s) => collapseToSingle(s))}
+                  title="Back to one tile — the other streams stop"
+                >
+                  Single
                 </button>
               )}
               {focusedChannel !== null && (
@@ -477,19 +523,19 @@ export default function WatchView(): React.JSX.Element {
             </div>
           </div>
 
-          {!tiles.split && (
+          {tiles.count === 1 && (
             <>
-              {mainPlayer.status.kind === 'reconnecting' && (
-                <p className="status-banner status-banner-warn">{mainPlayer.status.message}</p>
+              {players[0].status.kind === 'reconnecting' && (
+                <p className="status-banner status-banner-warn">{players[0].status.message}</p>
               )}
-              {mainPlayer.status.kind === 'failed' && (
-                <p className="status-banner status-banner-error">{mainPlayer.status.message}</p>
+              {players[0].status.kind === 'failed' && (
+                <p className="status-banner status-banner-error">{players[0].status.message}</p>
               )}
-              {mainPlayer.status.kind === 'connecting' && <p className="status-banner">Connecting…</p>}
-              {mainPlayer.autoplayBlocked && mainPlayer.status.kind !== 'playing' && (
+              {players[0].status.kind === 'connecting' && <p className="status-banner">Connecting…</p>}
+              {players[0].autoplayBlocked && players[0].status.kind !== 'playing' && (
                 <p className="status-banner status-banner-warn">Press ▶ to start — the browser blocked autoplay with sound.</p>
               )}
-              {mainPlayer.status.kind === 'playing' && <p className="status-banner status-banner-ok">Playing live.</p>}
+              {players[0].status.kind === 'playing' && <p className="status-banner status-banner-ok">Playing live.</p>}
             </>
           )}
           {focusedChannel !== null && focusedStatus.codecNote !== null && (

@@ -28,7 +28,11 @@ One **TV** screen (watch + guide + channels combined) plus **Settings**. The TV 
 resizable channel bar on the left (search + group filter), player with now/next on the
 right, and the EPG guide grid under the player (drag-to-pan, 3-hour steps, a **Prime time**
 jump and group/★ filters, now-line, programme detail — click any channel anywhere to tune).
-Panning refetches once the drag settles, not per pointer event. Playback always rides the BFF relay with the Dolby
+Panning refetches once the drag settles, not per pointer event. **Multi-view**: "+ Tile"
+grows the screen from one picture to a 2×2 grid of four concurrent streams; the focused tile
+carries audio and the zap keys, every tile has its own × close, and audio-only (radio)
+channels render a station card with logo and live equalizer bars instead of a black frame.
+Playback always rides the BFF relay with the Dolby
 audio fix (ffmpeg video-copy + AC-3→AAC — every provider stream carries AC-3, so without
 it there is no audio; there is deliberately no toggle). Cold channels take ~8s to first
 byte while Dispatcharr spins up the provider session — the player shows "Connecting…".
@@ -87,7 +91,7 @@ npm run build && npm run build:client   # server → dist/, client → public/
 | `DATA_DIR` | `./data` | SQLite database and sync state |
 | `PUBLIC_DIR` | `./public` | Built client assets served with SPA fallback |
 | `DISPATCHARR_URL` | — | Base URL of the Dispatcharr instance (e.g. `http://192.168.0.20:9191`). Required from M1 (sync) onward; validated at boot when set. |
-| `RELAY_MAX_STREAMS` | `3` | Cap on concurrent relayed streams — each holds a provider session (and, with the audio fix, an ffmpeg) on the host. Past the cap the relay answers 429. `0` disables the cap. |
+| `RELAY_MAX_STREAMS` | `4` | Cap on concurrent relayed streams — each holds a provider session (and, with the audio fix, an ffmpeg) on the host. The default covers one viewer's full 4-tile multi-view grid; past the cap the relay answers 429. `0` disables the cap. |
 | `BACKUP_KEEP` | `7` | Daily gzipped snapshots of the SQLite db, kept in `<DATA_DIR>/backups` (one at boot, then every 24h; older ones pruned). |
 
 Dispatcharr side prerequisites: its `M3U_EPG` network-ACL scope must include this app's

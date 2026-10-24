@@ -14,7 +14,7 @@ describe('loadConfig', () => {
     expect(cfg.port).toBe(8086)
     expect(cfg.publicDir).not.toBe('')
     expect(cfg.dispatcharrUrl).toBeNull()
-    expect(cfg.relayMaxStreams).toBe(3)
+    expect(cfg.relayMaxStreams).toBe(4)
     expect(cfg.backupKeep).toBe(7)
   })
 

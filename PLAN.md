@@ -134,7 +134,7 @@ Dispatcharr  /output/m3u ─► channels      (streaming parse)
 | M3 | Guide: 7-day grid, now/next, program detail | |
 | M4 | Polish: favorites, recents, search, logo caching, keyboard zapping | |
 | M5 | NAS deploy + real-Dispatcharr verification | release gate |
-| M6+ | Backlog: VOD (`/proxy/vod/…`), catch-up (`/api/catchup/sessions/`), real user accounts, multi-view, radio, HLS when Dispatcharr ships it | needs JWT REST + XC creds |
+| M6+ | Backlog: VOD (`/proxy/vod/…`), catch-up (`/api/catchup/sessions/`), real user accounts, HLS when Dispatcharr ships it | needs JWT REST + XC creds — multi-view (2×2, shipped 2026-10-24) and radio cards (audio-only tiles, shipped 2026-10-24) came off this list |
 
 ## Risks
 

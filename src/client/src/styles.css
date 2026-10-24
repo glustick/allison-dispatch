@@ -382,7 +382,8 @@ ul.watch-channel-list ul.watch-channel-list {
   position: relative;
 }
 
-/* ---- Multi-view tiles: one player in single mode, two side by side in split ---- */
+/* ---- Multi-view tiles: one player full-width, or a grid grown by "+ Tile" up to a 2×2.
+   The grid shape is expressed by [data-count] so layout lives in exactly one place. ---- */
 .watch-tiles {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -393,6 +394,11 @@ ul.watch-channel-list ul.watch-channel-list {
   grid-template-columns: 1fr;
 }
 
+/* Three tiles: two on top, one wide one underneath (better than a dangling empty cell). */
+.watch-tiles[data-count='3'] .watch-tile:last-child {
+  grid-column: 1 / -1;
+}
+
 .watch-tile {
   border: 2px solid transparent;
   border-radius: 12px;
@@ -400,13 +406,111 @@ ul.watch-channel-list ul.watch-channel-list {
   cursor: default;
 }
 
-/* Split mode: click a tile to focus it (audio follows focus) — say so visually. */
+/* Multi-tile mode: click a tile to focus it (audio follows focus) — say so visually. */
 .watch-tile[role='button'] {
   cursor: pointer;
 }
 
 .watch-tile-focused {
   border-color: var(--accent);
+}
+
+/* Per-tile close (multi-tile mode): floats above the picture, inside the tile's radius. */
+.tile-close {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  z-index: 6;
+  width: 1.6rem;
+  height: 1.6rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.72);
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.tile-close:hover {
+  color: #fff;
+  background: rgba(0, 0, 0, 0.9);
+}
+
+/* Audio-only streams (radio): the video element stays as the audio engine underneath, the
+   viewer sees a station card — logo, name, and equalizer bars that only dance while live. */
+.tile-radio {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  background: radial-gradient(circle at 50% 35%, #1c2532 0%, var(--panel) 70%);
+  border-radius: 10px;
+  padding: 1rem;
+  pointer-events: none;
+}
+
+.tile-radio-logo {
+  width: clamp(2.5rem, 30%, 4.5rem);
+  height: clamp(2.5rem, 30%, 4.5rem);
+  border-radius: 10px;
+  object-fit: contain;
+}
+
+.tile-radio-name {
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-align: center;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tile-radio-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 1.1rem;
+}
+
+.tile-radio-bars i {
+  width: 4px;
+  border-radius: 2px;
+  background: var(--accent);
+  height: 30%;
+  animation: radio-bar 1s ease-in-out infinite;
+}
+
+.tile-radio-bars i:nth-child(2) { animation-delay: 0.15s; }
+.tile-radio-bars i:nth-child(3) { animation-delay: 0.35s; }
+.tile-radio-bars i:nth-child(4) { animation-delay: 0.55s; }
+
+@keyframes radio-bar {
+  0%, 100% { height: 25%; }
+  50% { height: 100%; }
+}
+
+/* Not live yet → the bars hold still instead of pretending. */
+.tile-radio:not(.tile-radio-live) .tile-radio-bars i {
+  animation: none;
+  height: 25%;
+  opacity: 0.5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tile-radio-bars i {
+    animation: none;
+  }
 }
 
 .tile-hint {

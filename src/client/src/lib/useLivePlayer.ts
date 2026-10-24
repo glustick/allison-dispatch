@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import mpegts from 'mpegts.js'
 import type { Channel } from './api.js'
-import { buildPlaybackUrl, fetchPlayInfo, isDolbyAudioCodec, lastBufferedEnd, type PlaybackPrefs } from './playback.js'
+import { buildPlaybackUrl, describeMediaInfo, fetchPlayInfo, lastBufferedEnd, type PlaybackPrefs } from './playback.js'
 import { LivePlaybackMonitor } from './liveMonitor.js'
 
 // One live player instance, extracted verbatim from WatchView's inline effect so the
@@ -21,6 +21,8 @@ export interface LivePlayer {
   attachVideo: (el: HTMLVideoElement | null) => void
   status: StatusState
   codecNote: string | null
+  /** True once MEDIA_INFO shows a stream with audio but no video — the tile renders a radio card. */
+  audioOnly: boolean
   autoplayBlocked: boolean
   muted: boolean
   setMuted: (muted: boolean) => void
@@ -30,6 +32,7 @@ export interface LivePlayer {
 export function useLivePlayer(channel: Channel | null, prefs: PlaybackPrefs, initialMuted = false): LivePlayer {
   const [status, setStatus] = useState<StatusState>({ kind: 'idle', message: null })
   const [codecNote, setCodecNote] = useState<string | null>(null)
+  const [audioOnly, setAudioOnly] = useState(false)
   const [autoplayBlocked, setAutoplayBlocked] = useState(false)
   // initialMuted seeds the FIRST attached element only (a secondary tile mounts muted so its
   // autoplay needs no gesture); the audio-follows-focus effect drives everything after that.
@@ -68,6 +71,8 @@ export function useLivePlayer(channel: Channel | null, prefs: PlaybackPrefs, ini
     const video = videoRef.current
     if (!channel || !video) {
       setStatus({ kind: 'idle', message: null })
+      setCodecNote(null)
+      setAudioOnly(false)
       return
     }
     let disposed = false
@@ -109,15 +114,9 @@ export function useLivePlayer(channel: Channel | null, prefs: PlaybackPrefs, ini
         player.on(mpegts.Events.ERROR, () => failureRef.current('The stream session ended'))
         player.on(mpegts.Events.MEDIA_INFO, (raw: unknown) => {
           if (disposed) return
-          const mi = raw as { audioCodec?: string; videoCodec?: string }
-          const audio = mi.audioCodec ?? ''
-          setCodecNote(
-            audio === ''
-              ? `${mi.videoCodec ?? 'video'} · no audio track`
-              : isDolbyAudioCodec(audio)
-                ? `${mi.videoCodec ?? 'video'} + ${audio} — Dolby fixed to AAC by the server`
-                : `${mi.videoCodec ?? 'video'} + ${audio}`
-          )
+          const described = describeMediaInfo(raw as { audioCodec?: string; videoCodec?: string })
+          setCodecNote(described.codecNote)
+          setAudioOnly(described.audioOnly)
         })
         player.attachMediaElement(video)
         player.load()
@@ -175,5 +174,5 @@ export function useLivePlayer(channel: Channel | null, prefs: PlaybackPrefs, ini
   }, [])
   failureRef.current = handleFailure
 
-  return { attachVideo, status, codecNote, autoplayBlocked, muted, setMuted, restart }
+  return { attachVideo, status, codecNote, audioOnly, autoplayBlocked, muted, setMuted, restart }
 }

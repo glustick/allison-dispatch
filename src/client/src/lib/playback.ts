@@ -78,3 +78,21 @@ export function isDolbyAudioCodec(codec: string | undefined): boolean {
   if (codec === undefined || codec === '') return false
   return /(^|[^a-z])e?ac-?3([^a-z]|$)/i.test(codec) || /dolby/i.test(codec)
 }
+
+// What mpegts.js MEDIA_INFO tells the viewer, as one decision: the codec footnote AND
+// whether this stream has any picture at all. Audio-only streams (the lineup's radio
+// channels ride the same relay) get a "Radio · codec" note and an audioOnly flag so the
+// tile can swap its black rectangle for a radio card.
+export interface MediaDescription {
+  codecNote: string
+  audioOnly: boolean
+}
+
+export function describeMediaInfo(mi: { audioCodec?: string; videoCodec?: string }): MediaDescription {
+  const audio = mi.audioCodec ?? ''
+  const video = mi.videoCodec ?? ''
+  if (video === '' && audio !== '') return { codecNote: `Radio · ${audio}`, audioOnly: true }
+  if (audio === '') return { codecNote: `${video === '' ? 'unknown codecs' : video} · no audio track`, audioOnly: false }
+  const dolby = isDolbyAudioCodec(audio) ? ' — Dolby fixed to AAC by the server' : ''
+  return { codecNote: `${video} + ${audio}${dolby}`, audioOnly: false }
+}

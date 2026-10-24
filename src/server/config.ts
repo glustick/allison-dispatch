@@ -12,7 +12,8 @@ export interface AppConfig {
   /**
    * Cap on concurrent relayed streams (each spawns an ffmpeg on the host). 0 disables the
    * cap — an operator escape hatch, not the default. Beyond the cap the relay route
-   * answers 429 so a stuck tab can't fork the host into oblivion.
+   * answers 429 so a stuck tab can't fork the host into oblivion. Default 4 = one viewer's
+   * full multi-view grid; a second tab hits the 429 and the message says exactly that.
    */
   relayMaxStreams: number
   /** How many gzipped db snapshots the daily backup loop keeps. */
@@ -65,7 +66,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     dataDir: env.DATA_DIR?.trim() ? path.resolve(env.DATA_DIR) : path.resolve('data'),
     publicDir: env.PUBLIC_DIR?.trim() ? path.resolve(env.PUBLIC_DIR) : path.resolve('public'),
     dispatcharrUrl: rawDispatcharrUrl ? normalizeDispatcharrUrl(rawDispatcharrUrl) : null,
-    relayMaxStreams: parseIntEnv('RELAY_MAX_STREAMS', env.RELAY_MAX_STREAMS?.trim(), 3, 0),
+    relayMaxStreams: parseIntEnv('RELAY_MAX_STREAMS', env.RELAY_MAX_STREAMS?.trim(), 4, 0),
     backupKeep: parseIntEnv('BACKUP_KEEP', env.BACKUP_KEEP?.trim(), 7, 1)
   }
 }
