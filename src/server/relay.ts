@@ -72,10 +72,12 @@ export function validateMaxHeight(raw: unknown): number | null {
 // filter's min(ih,CAP) downsizes only when the source is taller, never upscales. The
 // filtergraph quoting ('min(ih,CAP)') is ffmpeg's own — the comma must be protected from the
 // chain parser or it splits the filter. Audio leg and muxing knobs are identical either way.
+// The video map is optional ('0:v:0?' — same idiom as the audio map): audio-only streams
+// (radio) carry no video track, and a mandatory map is a fatal ffmpeg error there.
 export function buildFfmpegArgs(maxHeight: number | null): string[] {
   const video = maxHeight === null
-    ? ['-map', '0:v:0', '-c:v', 'copy']
-    : ['-map', '0:v:0', '-vf', `scale=-2:'min(ih,${maxHeight})'`, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23']
+    ? ['-map', '0:v:0?', '-c:v', 'copy']
+    : ['-map', '0:v:0?', '-vf', `scale=-2:'min(ih,${maxHeight})'`, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23']
   return [
     '-hide_banner', '-loglevel', 'error',
     '-fflags', '+nobuffer',

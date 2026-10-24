@@ -88,8 +88,21 @@ export function useLivePlayer(channel: Channel | null, prefs: PlaybackPrefs, ini
     }
     video.addEventListener('playing', onPlaying)
 
+    // Audio-only streams (radio): mpegts.js never fires MEDIA_INFO for a stream with no
+    // video track (verified against a real audio-only TS), so the browser's own dimensions
+    // are the reliable signal — a video track reports >0 at loadedmetadata, audio-only
+    // stays 0. 'resize' covers streams that change tracks mid-flight.
+    const onVideoMeta = (): void => {
+      if (!disposed) setAudioOnly(video.videoWidth === 0)
+    }
+    video.addEventListener('loadedmetadata', onVideoMeta)
+    video.addEventListener('resize', onVideoMeta)
+
     const start = async (): Promise<void> => {
+      // Fresh selection — the previous channel's codec facts must not linger while connecting.
       setStatus({ kind: 'connecting', message: null })
+      setCodecNote(null)
+      setAudioOnly(false)
       monitor.reset()
       try {
         const info = await fetchPlayInfo(channel.uuid, prefsRef.current.format, prefsRef.current.maxHeight)
@@ -145,6 +158,8 @@ export function useLivePlayer(channel: Channel | null, prefs: PlaybackPrefs, ini
     return () => {
       disposed = true
       video.removeEventListener('playing', onPlaying)
+      video.removeEventListener('loadedmetadata', onVideoMeta)
+      video.removeEventListener('resize', onVideoMeta)
       if (pollTimer !== null) window.clearInterval(pollTimer)
       try {
         player?.destroy()

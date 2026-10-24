@@ -48,6 +48,25 @@ function ensureTallAc3Fixture(): string {
   return generateTsFixture(TALL_FIXTURE_PATH, '640x480')
 }
 
+// A radio stream: audio only, no video track at all. The audio fix used to hard-map '0:v:0',
+// which is a fatal ffmpeg error on such input — radio died in the relay before reaching the
+// browser. The fixture proves the optional video map ('0:v:0?') lets it through.
+const AUDIO_ONLY_FIXTURE_PATH = path.join(tmpdir(), 'allison-dispatch-audio-only-fixture.ts')
+
+function ensureAudioOnlyFixture(): string {
+  if (existsSync(AUDIO_ONLY_FIXTURE_PATH)) return AUDIO_ONLY_FIXTURE_PATH
+  const result = spawnSync(resolveFfmpegBin(), [
+    '-hide_banner', '-loglevel', 'error',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=45',
+    '-c:a', 'aac', '-b:a', '128k',
+    '-f', 'mpegts', '-y', AUDIO_ONLY_FIXTURE_PATH
+  ], { timeout: 120_000 })
+  if (result.status !== 0 || !existsSync(AUDIO_ONLY_FIXTURE_PATH)) {
+    throw new Error(`audio-only fixture generation failed: ${result.stderr?.toString().slice(0, 400)}`)
+  }
+  return AUDIO_ONLY_FIXTURE_PATH
+}
+
 async function captureBytes(url: string, ms: number): Promise<Buffer> {
   const controller = new AbortController()
   const bail = setTimeout(() => controller.abort(), ms)
@@ -179,6 +198,41 @@ describe('audio-fix relay (real ffmpeg)', () => {
       server.closeAllConnections()
       await new Promise<void>((resolve) => server.close(() => resolve()))
       await tallFake.close()
+    }
+  })
+
+  it('an audio-only stream (radio) passes the audio fix with no video track', { timeout: 45_000 }, async () => {
+    ensureAudioOnlyFixture()
+    const radioFake = await startFakeDispatcharr({ now: new Date('2026-10-04T12:00:00Z'), streamFile: AUDIO_ONLY_FIXTURE_PATH })
+    const radioDb = openDb(':memory:')
+    await syncM3u({ db: radioDb, dispatcharrUrl: radioFake.url })
+    const { createServer } = await import('http')
+    let stderrTail = ''
+    const server = createServer((req, res) => {
+      void relayStream(
+        { db: radioDb, dispatcharrUrl: radioFake.url, onFfmpegSpawn: (p) => {
+          p.stderr?.on('data', (d: Buffer) => { stderrTail = (stderrTail + d.toString()).slice(-600) })
+        } },
+        DEFAULT_FAKE_CHANNELS[0].uuid, null, res, req, true
+      )
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/relay`
+    try {
+      const out = await captureBytes(url, 15_000)
+      if (out.length === 0) {
+        console.log('[diag] audio-only relay captured ZERO bytes; ffmpeg stderr:', stderrTail)
+      }
+      expect(out.length).toBeGreaterThan(10_000) // audio bytes flowed — the map did not kill the session
+      const outFile = path.join(tmpdir(), `allison-dispatch-radio-out-${Date.now()}.ts`)
+      writeFileSync(outFile, out)
+      const codecs = probeCodecs(outFile)
+      expect(codecs).toMatch(/Audio: aac/)
+      expect(codecs).not.toMatch(/Stream.*Video:/) // audio in, audio out — no video track invented
+    } finally {
+      server.closeAllConnections()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+      await radioFake.close()
     }
   })
 
