@@ -10,6 +10,8 @@ import { getSetting, setDispatcharrUrl, clearDispatcharrUrl, resolveDispatcharrU
 import { runSync, SyncFailure, type SyncSummary } from './sync.js'
 import { relayStream, buildStreamUrl, validateOutputFormat, validateMaxHeight, parseFixAudio } from './relay.js'
 import { addFavorite, removeFavorite, listFavorites, listRecents, recordWatch } from './userData.js'
+import { listReminders, addReminder, removeReminder, type ReminderRow } from './reminders.js'
+import { proxiedLogoUrl, proxyLogo } from './logoProxy.js'
 import {
   createAuthContext,
   requireAuth,
@@ -59,6 +61,27 @@ async function defaultTestConnection(base: string): Promise<ConnectionTestResult
     }
     return { ok: false, error: String(err) }
   }
+}
+
+// A reminder body is only usable if every field has the shape the table and the toast need:
+// identity strings, and an integer epoch-ms window whose end is after its start.
+function validateReminder(body: Partial<ReminderRow> | undefined): ReminderRow | null {
+  if (body === undefined) return null
+  const { channel_uuid, tvg_id, title, start_utc, stop_utc } = body
+  if (typeof channel_uuid !== 'string' || channel_uuid === '') return null
+  if (typeof tvg_id !== 'string' || tvg_id === '') return null
+  if (typeof title !== 'string' || title === '') return null
+  if (typeof start_utc !== 'number' || typeof stop_utc !== 'number') return null
+  if (!Number.isInteger(start_utc) || !Number.isInteger(stop_utc) || stop_utc <= start_utc) return null
+  return { channel_uuid, tvg_id, title, start_utc, stop_utc }
+}
+
+// Logos ride a same-origin proxy: the browser must never load Dispatcharr's http:// URLs
+// directly (mixed content on the https hostname, unreachable off-LAN). Applied at every
+// logo_url emission point; the bytes flow through GET /api/logo.
+function withProxiedLogos<T extends { logo_url: string | null }>(db: Db, cfg: AppConfig, rows: T[]): T[] {
+  const base = resolveDispatcharrUrl(db, cfg.dispatcharrUrl)
+  return rows.map((row) => ({ ...row, logo_url: proxiedLogoUrl(base, row.logo_url) }))
 }
 
 // App factory instead of one giant bootstrap file (the sibling's index.ts grew organically
@@ -244,7 +267,7 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
     // ---- Per-user favorites and watch history ----
     app.get('/api/favorites', (req: Request, res: Response) => {
       const user = (req as Request & { sessionUser?: { id: number } }).sessionUser
-      res.json({ favorites: listFavorites(db, user?.id ?? 0) })
+      res.json({ favorites: withProxiedLogos(db, cfg, listFavorites(db, user?.id ?? 0)) })
     })
 
     app.put('/api/favorites/:uuid', (req: Request, res: Response) => {
@@ -266,7 +289,66 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
 
     app.get('/api/history/recents', (req: Request, res: Response) => {
       const user = (req as Request & { sessionUser?: { id: number } }).sessionUser
-      res.json({ recents: listRecents(db, user?.id ?? 0) })
+      res.json({ recents: withProxiedLogos(db, cfg, listRecents(db, user?.id ?? 0)) })
+    })
+
+    // ---- Programme reminders ("Remind me" in the guide) ----
+    app.get('/api/reminders', (req: Request, res: Response) => {
+      const user = (req as Request & { sessionUser?: { id: number } }).sessionUser
+      res.json({ reminders: listReminders(db, user?.id ?? 0, clock()) })
+    })
+
+    app.put('/api/reminders', (req: Request, res: Response) => {
+      const user = (req as Request & { sessionUser?: { id: number } }).sessionUser
+      const body = req.body as Partial<ReminderRow> | undefined
+      const reminder: ReminderRow | null = validateReminder(body)
+      if (reminder === null) {
+        res.status(400).json({ error: 'reminder needs channel_uuid, tvg_id, title (strings), start_utc and stop_utc (epoch ms ints, stop > start)' })
+        return
+      }
+      // The channel must exist, and the reminder's tvg_id must be that channel's — a
+      // reminder for an unknown channel would fire a toast that can never be watched.
+      const channel = db.prepare('SELECT tvg_id FROM channels WHERE uuid = ?').get(reminder.channel_uuid) as
+        | { tvg_id: string | null }
+        | undefined
+      if (channel === undefined || channel.tvg_id !== reminder.tvg_id) {
+        res.status(404).json({ error: 'channel not found (or tvg_id mismatch)' })
+        return
+      }
+      addReminder(db, user?.id ?? 0, reminder)
+      res.status(201).json({ ok: true })
+    })
+
+    app.delete('/api/reminders/:tvgId/:startUtc', (req: Request, res: Response) => {
+      const user = (req as Request & { sessionUser?: { id: number } }).sessionUser
+      const startUtc = Number(req.params.startUtc)
+      if (!Number.isFinite(startUtc)) {
+        res.status(400).json({ error: 'startUtc must be a number' })
+        return
+      }
+      removeReminder(db, user?.id ?? 0, req.params.tvgId, startUtc)
+      res.json({ ok: true })
+    })
+
+    // The logo bytes themselves — see logoProxy.ts for the same-origin/SSRF guard.
+    app.get('/api/logo', (req: Request, res: Response) => {
+      const base = resolveDispatcharrUrl(db, cfg.dispatcharrUrl)
+      if (base === null) {
+        res.status(503).json({ error: 'Dispatcharr URL is not configured' })
+        return
+      }
+      const src = typeof req.query.u === 'string' ? req.query.u : ''
+      proxyLogo({ dispatcharrBase: base }, src, res)
+        .then((result) => {
+          // proxyLogo writes the response itself on success; error results must still
+          // answer HTTP or the browser's <img> would hang forever.
+          if (!result.ok && !res.headersSent) {
+            res.status(result.status).json({ error: result.error })
+          }
+        })
+        .catch(() => {
+          if (!res.headersSent) res.status(502).json({ error: 'logo proxy failed' })
+        })
     })
 
     // ---- User management (admin) ----
@@ -355,7 +437,7 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
     })
 
     app.get('/api/channels', (_req: Request, res: Response) => {
-      const channels = listChannels(db)
+      const channels = withProxiedLogos(db, cfg, listChannels(db))
       res.json({ count: channels.length, channels })
     })
 
@@ -394,7 +476,7 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
         res.status(400).json({ error: 'start and end (epoch ms, end > start, span ≤ 24h) are required' })
         return
       }
-      const channels = guideGrid(db, start, end)
+      const channels = withProxiedLogos(db, cfg, guideGrid(db, start, end))
       res.json({ count: channels.length, window: { start, end }, channels })
     })
 
@@ -408,7 +490,7 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
       }
       const limitRaw = Number(req.query.limit)
       const limit = Number.isFinite(limitRaw) && limitRaw >= 1 ? Math.min(Math.floor(limitRaw), 500) : 100
-      const programmes = searchProgrammes(db, q, clock(), limit)
+      const programmes = withProxiedLogos(db, cfg, searchProgrammes(db, q, clock(), limit))
       res.json({ count: programmes.length, programmes })
     })
 

@@ -82,6 +82,7 @@ export interface GuideGridChannel {
   uuid: string
   name: string
   channel_number: number | null
+  tvg_id: string | null
   logo_url: string | null
   group_name: string | null
   programmes: ProgrammeRow[]
@@ -89,11 +90,11 @@ export interface GuideGridChannel {
 
 // The whole guide grid in one query: every channel with its programmes overlapping the
 // window, LEFT JOINed so guide-less channels still appear (their rows render "No guide
-// data", like the sibling's grid).
+// data", like the sibling's grid). tvg_id rides along — reminder identity is (tvg_id, start).
 export function guideGrid(db: Db, startMs: number, endMs: number): GuideGridChannel[] {
   const rows = db
     .prepare(
-      `SELECT c.uuid, c.name, c.channel_number, c.logo_url, c.group_name,
+      `SELECT c.uuid, c.name, c.channel_number, c.tvg_id, c.logo_url, c.group_name,
               p.title, p.description, p.category, p.start_utc, p.stop_utc
        FROM channels c
        LEFT JOIN epg_programs p
@@ -104,6 +105,7 @@ export function guideGrid(db: Db, startMs: number, endMs: number): GuideGridChan
     uuid: string
     name: string
     channel_number: number | null
+    tvg_id: string | null
     logo_url: string | null
     group_name: string | null
     title: string | null
@@ -120,6 +122,7 @@ export function guideGrid(db: Db, startMs: number, endMs: number): GuideGridChan
         uuid: row.uuid,
         name: row.name,
         channel_number: row.channel_number,
+        tvg_id: row.tvg_id,
         logo_url: row.logo_url,
         group_name: row.group_name,
         programmes: []

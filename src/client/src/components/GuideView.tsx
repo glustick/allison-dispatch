@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import { getJson, type Channel } from '../lib/api.js'
+import { getJson, sendJson, type Channel, type RemindersResponse } from '../lib/api.js'
+import { reminderKey } from '../lib/reminders.js'
 import { loadSavedDimension, saveDimension, useResizableDimension } from '../lib/useResizableDimension.js'
 import { ALL_GROUPS, filterGuideChannels, guideGroups } from '../lib/guideFilters.js'
 
@@ -79,6 +80,23 @@ export default function GuideView({
   const [panning, setPanning] = useState(false)
   const [group, setGroup] = useState<string>(ALL_GROUPS)
   const [favoritesOnly, setFavoritesOnly] = useState(false)
+
+  // ---- Programme reminders: which (tvg_id, start_utc) pairs have a reminder set ----
+  const [reminderKeys, setReminderKeys] = useState<ReadonlySet<string>>(() => new Set())
+  useEffect(() => {
+    let cancelled = false
+    getJson<RemindersResponse>('/api/reminders')
+      .then((body) => {
+        if (cancelled) return
+        setReminderKeys(new Set(body.reminders.map((r) => reminderKey(r.tvg_id, r.start_utc))))
+      })
+      .catch(() => {
+        // Reminders are an enhancement — a failed load just means the buttons start unset.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const { dimension: channelColWidth, startDrag: startChannelColDrag } = useResizableDimension(
     loadSavedDimension('allison-dispatch.guide-channel-col', 160, 90, 320),
@@ -171,6 +189,42 @@ export default function GuideView({
     () => filterGuideChannels(grid?.channels ?? [], { group, favoritesOnly, favorites: favSet }),
     [grid, group, favoritesOnly, favSet]
   )
+
+  // The detail panel's reminder toggle. Only future programmes can be reminded; the key is
+  // the EPG's programme identity, and the server deduplicates per (user, tvg_id, start).
+  const detailKey =
+    detail !== null && detail.channel.tvg_id != null ? reminderKey(detail.channel.tvg_id, detail.programme.start_utc) : null
+  const detailIsFuture = detail !== null && detail.programme.start_utc > now
+  async function toggleReminder(): Promise<void> {
+    if (detail === null || detailKey === null || detail.channel.tvg_id == null) return
+    const had = reminderKeys.has(detailKey)
+    setReminderKeys((prev) => {
+      const next = new Set(prev)
+      if (had) next.delete(detailKey)
+      else next.add(detailKey)
+      return next
+    }) // optimistic; revert if the server disagrees
+    try {
+      if (had) {
+        await sendJson(`/api/reminders/${encodeURIComponent(detail.channel.tvg_id)}/${detail.programme.start_utc}`, 'DELETE')
+      } else {
+        await sendJson('/api/reminders', 'PUT', {
+          channel_uuid: detail.channel.uuid,
+          tvg_id: detail.channel.tvg_id,
+          title: detail.programme.title,
+          start_utc: detail.programme.start_utc,
+          stop_utc: detail.programme.stop_utc
+        })
+      }
+    } catch {
+      setReminderKeys((prev) => {
+        const next = new Set(prev)
+        if (had) next.add(detailKey)
+        else next.delete(detailKey)
+        return next
+      })
+    }
+  }
 
   return (
     <section className={`view epg-grid${panning ? ' epg-grid--panning' : ''}${embedded ? ' epg-grid--embedded' : ''}`}>
@@ -306,6 +360,16 @@ export default function GuideView({
           {detail.programme.description !== null && <p>{detail.programme.description}</p>}
           <div className="toolbar">
             <button type="button" onClick={() => onWatch(detail.channel)}>Watch {detail.channel.name}</button>
+            {detailIsFuture && detailKey !== null && (
+              <button
+                type="button"
+                className={reminderKeys.has(detailKey) ? 'reminder-set' : undefined}
+                onClick={() => void toggleReminder()}
+                title={reminderKeys.has(detailKey) ? 'Reminder set — click to cancel' : 'Toast me when this starts'}
+              >
+                {reminderKeys.has(detailKey) ? 'Reminder ✓' : 'Remind me'}
+              </button>
+            )}
             <button type="button" onClick={() => setDetail(null)}>Close</button>
           </div>
         </div>

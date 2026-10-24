@@ -81,6 +81,23 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (user_id, channel_uuid)
   );
   CREATE INDEX IF NOT EXISTS idx_watch_history_recent ON watch_history (user_id, watched_at_utc DESC);
+  `,
+  // v4 — programme reminders ("Remind me" in the guide). A reminder is one programme:
+  // identity is (tvg_id, start_utc), the same key the EPG uses. channel_uuid rides along so
+  // the toast can tune without a lookup; rows whose programme has ended simply stop being
+  // served and are pruned lazily.
+  `
+  CREATE TABLE IF NOT EXISTS reminders (
+    user_id INTEGER NOT NULL,
+    tvg_id TEXT NOT NULL,
+    channel_uuid TEXT NOT NULL,
+    title TEXT NOT NULL,
+    start_utc INTEGER NOT NULL,
+    stop_utc INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (user_id, tvg_id, start_utc)
+  );
+  CREATE INDEX IF NOT EXISTS idx_reminders_start ON reminders (user_id, start_utc);
   `
 ]
 

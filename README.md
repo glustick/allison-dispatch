@@ -29,7 +29,10 @@ resizable channel bar on the left (search + group filter, channel logos, numeric
 "150" finds the 1503+ block), player with now/next on the right, and the EPG guide grid
 under the player (drag-to-pan, 3-hour steps, a **Prime time** jump and group/★ filters,
 now-line, programme detail — click any channel anywhere to tune). Panning refetches once
-the drag settles, not per pointer event. **Multi-view**: "+ Tile" grows the screen from one
+the drag settles, not per pointer event. Channel **logos ride a same-origin BFF proxy**
+(`/api/logo`) — Dispatcharr is plain-HTTP on the LAN, so direct logo URLs would be blocked
+as mixed content on the https hostname (and unreachable off-LAN); the proxy also lets the
+browser cache them. **Multi-view**: "+ Tile" grows the screen from one
 picture to a 2×2 grid of four concurrent streams; the focused tile carries audio and the
 zap keys, every tile has its own × close, each tile shows what's on right now, and
 audio-only (radio) channels render a station card with logo and live equalizer bars instead
@@ -38,7 +41,9 @@ back to the previous channel** (press again to toggle), and **PiP** pops the foc
 picture into a floating window; **?** (or the ? button) lists every shortcut. The focused
 tile is what the OS media controls show (programme, channel, logo — hardware media keys
 zap and pause), the tab title names the channel, and failed streams offer a **Try again**
-button after the player's own retry budget is spent. The app is **installable** (PWA
+button after the player's own retry budget is spent. The guide's programme detail has a
+**Remind me** toggle — when a reminded programme starts, a toast offers one-click Watch.
+The app is **installable** (PWA
 manifest + icons; the service worker is a deliberate no-op — caching would pin viewers to
 stale bundles).
 Playback always rides the BFF relay with the Dolby

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { getJson, type Channel, type ChannelsResponse, type ProgrammeHit, type ProgrammeSearchResponse } from '../lib/api.js'
+import { getJson, sendJson, type Channel, type ChannelsResponse, type ProgrammeHit, type ProgrammeSearchResponse, type Reminder, type RemindersResponse } from '../lib/api.js'
+import { isReminderDue, reminderKey } from '../lib/reminders.js'
 import { appendDigit, resolveNumberExact, resolveNumberImmediate, toggledChannel, zapStep } from '../lib/zapping.js'
 import { loadPrefs, savePrefs, togglePictureInPicture, type OutputFormat, type PlaybackPrefs } from '../lib/playback.js'
 import { buildMediaMetadata } from '../lib/mediaSession.js'
@@ -211,6 +212,51 @@ export default function WatchView(): React.JSX.Element {
 
   // ---- Keyboard shortcuts overlay ('?') ----
   const [helpOpen, setHelpOpen] = useState(false)
+
+  // ---- Programme reminders: poll, toast the ones just starting, delete them server-side ----
+  // The pure timing rule (isReminderDue) keeps a tab reopened after hours from replaying a
+  // whole evening of stale reminders; the fired-set keeps one programme from toasting twice
+  // in a session even if the poll and the delete race.
+  const [toasts, setToasts] = useState<Reminder[]>([])
+  const firedRemindersRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    let cancelled = false
+    async function poll(): Promise<void> {
+      try {
+        const body = await getJson<RemindersResponse>('/api/reminders')
+        if (cancelled) return
+        const now = Date.now()
+        for (const reminder of body.reminders) {
+          const key = reminderKey(reminder.tvg_id, reminder.start_utc)
+          if (!isReminderDue(reminder.start_utc, now) || firedRemindersRef.current.has(key)) continue
+          firedRemindersRef.current.add(key)
+          setToasts((prev) => [...prev, reminder])
+          void sendJson(`/api/reminders/${encodeURIComponent(reminder.tvg_id)}/${reminder.start_utc}`, 'DELETE').catch(() => {})
+          window.setTimeout(() => {
+            setToasts((prev) => prev.filter((t) => t !== reminder))
+          }, 60_000)
+        }
+      } catch {
+        // Reminder polling is best-effort.
+      }
+    }
+    void poll()
+    const timer = window.setInterval(() => void poll(), 30_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [])
+
+  function dismissToast(reminder: Reminder): void {
+    setToasts((prev) => prev.filter((t) => t !== reminder))
+  }
+
+  function watchToast(reminder: Reminder): void {
+    const channel = byUuid.get(reminder.channel_uuid)
+    if (channel !== undefined) tune(channel)
+    dismissToast(reminder)
+  }
 
   // ---- Programme search: the sidebar needle searches the guide too (debounced) ----
   const [programmeHits, setProgrammeHits] = useState<ProgrammeHit[] | null>(null)
@@ -702,6 +748,25 @@ export default function WatchView(): React.JSX.Element {
 
           <GuideView embedded onWatch={tune} favorites={favorites} />
         </div>
+
+        {toasts.length > 0 && (
+          <div className="toast-stack" role="status" aria-live="polite">
+            {toasts.map((reminder) => (
+              <div className="toast" key={reminderKey(reminder.tvg_id, reminder.start_utc)}>
+                <div className="toast-main">
+                  <strong>{reminder.title}</strong>
+                  <span className="muted-note">
+                    starting now on {byUuid.get(reminder.channel_uuid)?.name ?? 'a channel'}
+                  </span>
+                </div>
+                <div className="toast-actions">
+                  <button type="button" onClick={() => watchToast(reminder)}>Watch</button>
+                  <button type="button" onClick={() => dismissToast(reminder)} aria-label="Dismiss reminder">×</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </section>
   )

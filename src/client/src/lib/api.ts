@@ -68,6 +68,19 @@ export interface SyncRunResponse {
   error?: string
 }
 
+// A programme reminder ("Remind me" in the guide). Identity is (tvg_id, start_utc).
+export interface Reminder {
+  tvg_id: string
+  channel_uuid: string
+  title: string
+  start_utc: number
+  stop_utc: number
+}
+
+export interface RemindersResponse {
+  reminders: Reminder[]
+}
+
 export async function getJson<T>(url: string): Promise<T> {
   const res = await fetch(url)
   if (!res.ok) throw new Error(`GET ${url} failed with ${res.status}`)
