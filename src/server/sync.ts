@@ -22,6 +22,13 @@ export interface SyncDeps {
   dispatcharrUrl: string
   /** EPG window in days — bounds the transfer size. Default 7. */
   days?: number
+  /**
+   * Days of PAST guide to request (Dispatcharr's prev_days). Default 0 — no backward data,
+   * exactly the pre-catch-up behavior (and the 6h retention housekeeping below). The app
+   * wiring passes 2 so the guide covers the provider's catch-up windows: ended programmes
+   * appear in the grid and "Watch from start" can replay them.
+   */
+  prevDays?: number
   now?: () => number
 }
 
@@ -120,7 +127,8 @@ export async function syncEpg(deps: SyncDeps): Promise<SyncSummary['epg']> {
   markRunning(db, 'epg')
   try {
     const days = deps.days ?? 7
-    const res = await fetch(`${deps.dispatcharrUrl}/output/epg?days=${days}`, {
+    const prevDays = deps.prevDays ?? 0
+    const res = await fetch(`${deps.dispatcharrUrl}/output/epg?days=${days}&prev_days=${prevDays}`, {
       signal: AbortSignal.timeout(EPG_TIMEOUT_MS)
     })
     if (!res.ok) {
@@ -167,7 +175,11 @@ export async function syncEpg(deps: SyncDeps): Promise<SyncSummary['epg']> {
     flush(batch)
 
     const nowMs = deps.now?.() ?? Date.now()
-    db.prepare('DELETE FROM epg_programs WHERE stop_utc < ?').run(nowMs - EPG_RETENTION_MS)
+    // Housekeeping horizon: with backward guide the retention must cover the whole requested
+    // past window (plus the same 6h slack), or every sync would delete the programmes the
+    // prev_days fetch just brought in — the catch-up guide would never build up.
+    const retentionMs = (deps.prevDays ?? 0) * 24 * 60 * 60 * 1000 + EPG_RETENTION_MS
+    db.prepare('DELETE FROM epg_programs WHERE stop_utc < ?').run(nowMs - retentionMs)
     const channelCount = db.prepare('SELECT COUNT(DISTINCT channel_id) AS n FROM epg_programs').get() as { n: number }
     markOk(db, 'epg', total)
     return { programmes: total, channels: channelCount.n }

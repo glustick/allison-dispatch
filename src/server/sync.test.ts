@@ -71,6 +71,27 @@ describe('sync against the wire-level fake', () => {
     expect(result?.next?.title).toBe('ACME News HD — Slot 2')
   })
 
+  it('prev_days brings ended programmes in and retention widens to keep them', async () => {
+    await syncM3u({ db, dispatcharrUrl: fake.url })
+    // prev_days=1 → the fake serves 12 extra 2h slots back (~24h of history).
+    const summary = await syncEpg({ db, dispatcharrUrl: fake.url, prevDays: 1, now: () => FAKE_NOW.getTime() })
+    expect(summary?.programmes).toBeGreaterThan(24) // the default window's worth plus history
+    // A programme that ENDED ~22.5h before the clock is present (it would be gone under the
+    // plain 6h retention) — this is exactly what "Watch from start" needs.
+    const cutoff = FAKE_NOW.getTime() - 22.5 * 60 * 60 * 1000
+    const old = db
+      .prepare('SELECT COUNT(*) AS n FROM epg_programs WHERE stop_utc < ? AND stop_utc > ?')
+      .get(FAKE_NOW.getTime() - 6 * 60 * 60 * 1000, cutoff - 2 * 60 * 60 * 1000) as { n: number }
+    expect(old.n).toBeGreaterThan(0)
+    // And programmes older than the widened window (prev_days + 6h) are still housekept.
+    await db.prepare('DELETE FROM epg_programs').run()
+    await syncEpg({ db, dispatcharrUrl: fake.url, prevDays: 1, now: () => FAKE_NOW.getTime() + 25 * 60 * 60 * 1000 })
+    const survivors = db
+      .prepare('SELECT COUNT(*) AS n FROM epg_programs WHERE stop_utc < ?')
+      .get(FAKE_NOW.getTime() + 25 * 60 * 60 * 1000 - (24 + 6) * 60 * 60 * 1000) as { n: number }
+    expect(survivors.n).toBe(0)
+  })
+
   it('EPG retention drops programmes that stopped more than 6h before the sync clock', async () => {
     await syncM3u({ db, dispatcharrUrl: fake.url })
     // 11 hours after the fixture clock: every slot has been over for ≥ 6.5h.

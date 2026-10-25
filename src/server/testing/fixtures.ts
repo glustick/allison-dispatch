@@ -64,11 +64,11 @@ export interface ProgrammeSlot {
 // Four 2-hour programme slots per channel straddling `now` — offset by 30 minutes so the
 // "live" slot strictly CONTAINS now instead of ending exactly on it (real programme grids
 // don't align with sync moments, and now/next queries must handle strict containment).
-export function buildProgrammeSlots(now: Date, channel: FakeChannel): ProgrammeSlot[] {
+export function buildProgrammeSlots(now: Date, channel: FakeChannel, extraBackSlots = 0): ProgrammeSlot[] {
   const TWO_HOURS_MS = 2 * 60 * 60 * 1000
   const OFFSET_MS = 30 * 60 * 1000
   const slots: ProgrammeSlot[] = []
-  for (let i = -2; i <= 1; i++) {
+  for (let i = -2 - extraBackSlots; i <= 1; i++) {
     const start = new Date(now.getTime() + i * TWO_HOURS_MS + OFFSET_MS)
     const stop = new Date(start.getTime() + TWO_HOURS_MS)
     slots.push({
@@ -80,7 +80,8 @@ export function buildProgrammeSlots(now: Date, channel: FakeChannel): ProgrammeS
   return slots
 }
 
-export function buildEpgXml(now: Date, channels: FakeChannel[]): string {
+/** backSlots extends the schedule backward by that many 2h slots — the fake's stand-in for Dispatcharr's prev_days. */
+export function buildEpgXml(now: Date, channels: FakeChannel[], backSlots = 0): string {
   const esc = (s: string): string =>
     s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
   const out: string[] = [
@@ -95,7 +96,7 @@ export function buildEpgXml(now: Date, channels: FakeChannel[]): string {
     out.push('  </channel>')
   }
   for (const ch of channels) {
-    for (const slot of buildProgrammeSlots(now, ch)) {
+    for (const slot of buildProgrammeSlots(now, ch, backSlots)) {
       out.push(
         `  <programme start="${xmltvTimestamp(slot.start)}" stop="${xmltvTimestamp(slot.stop)}" channel="${ch.id}">`
       )

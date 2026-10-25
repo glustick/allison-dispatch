@@ -252,9 +252,13 @@ export default function WatchView(): React.JSX.Element {
     setToasts((prev) => prev.filter((t) => t !== reminder))
   }
 
-  function watchToast(reminder: Reminder): void {
+  function watchToast(reminder: Reminder, fromStart = false): void {
     const channel = byUuid.get(reminder.channel_uuid)
-    if (channel !== undefined) tune(channel)
+    if (channel !== undefined) {
+      // A toast that arrives late (or is opened from a phone lock screen minutes in) can
+      // still join the programme at its beginning — the catch-up path covers it.
+      tune(fromStart ? { ...channel, catchupStartMs: reminder.start_utc } : channel)
+    }
     dismissToast(reminder)
   }
 
@@ -768,6 +772,11 @@ export default function WatchView(): React.JSX.Element {
                 </div>
                 <div className="toast-actions">
                   <button type="button" onClick={() => watchToast(reminder)}>Watch</button>
+                  {/* The reminder fires AT start, so the programme is under way — joining
+                      from its beginning is one click, via the catch-up path. */}
+                  <button type="button" onClick={() => watchToast(reminder, true)} title="Join this programme from its beginning">
+                    From start
+                  </button>
                   <button type="button" onClick={() => dismissToast(reminder)} aria-label="Dismiss reminder">×</button>
                 </div>
               </div>

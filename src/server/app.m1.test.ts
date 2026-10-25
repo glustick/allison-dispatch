@@ -80,7 +80,9 @@ describe('M1 API surfaces', () => {
     expect(syncRes.status).toBe(200)
     const { summary } = (await syncRes.json()) as { summary: { m3u: { channels: number }; epg: { programmes: number } } }
     expect(summary.m3u.channels).toBe(6)
-    expect(summary.epg.programmes).toBe(24)
+    // The app's sync wiring requests prev_days=2: 6 channels × (4 live-window slots + 24
+    // backward 2h slots) = 168 — the backward guide is what "Watch from start" replays from.
+    expect(summary.epg.programmes).toBe(168)
 
     const channelsRes = await jfetch('/api/channels')
     const body = (await channelsRes.json()) as {

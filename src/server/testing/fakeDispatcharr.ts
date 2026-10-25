@@ -189,11 +189,14 @@ export async function startFakeDispatcharr(opts: FakeDispatcharrOptions): Promis
     }
 
     if (reqUrl.pathname === '/output/epg') {
+      // prev_days extends the schedule backward (2h slots), mirroring the live instance.
+      const prevDaysRaw = Number(reqUrl.searchParams.get('prev_days') ?? '0')
+      const backSlots = Number.isFinite(prevDaysRaw) && prevDaysRaw > 0 ? Math.round(prevDaysRaw * 12) : 0
       // Header set mirrors the live probe: application/xml, chunked, attachment, no-cache.
       sendChunked(res, 'application/xml', {
         'Content-Disposition': 'attachment; filename="Dispatcharr.xml"',
         'Cache-Control': 'no-cache'
-      }, buildEpgXml(opts.now, channels))
+      }, buildEpgXml(opts.now, channels, backSlots))
       return
     }
 

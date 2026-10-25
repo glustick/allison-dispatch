@@ -452,7 +452,9 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
       if (base === null) return Promise.reject(new SyncFailure('m3u', 'Dispatcharr URL is not configured'))
       // Thread the app clock through: EPG retention must judge "old" against the same clock
       // the tests inject, not the wall (a suite run days after fixture data would wipe it).
-      return runSync({ db: d, dispatcharrUrl: base, now: clock }, kinds)
+      // prev_days=2: the guide carries two days of ENDED programmes so "Watch from start"
+      // can replay anything inside the provider's catch-up windows.
+      return runSync({ db: d, dispatcharrUrl: base, now: clock, prevDays: 2 }, kinds)
     })
 
     app.get('/api/channels', (_req: Request, res: Response) => {
