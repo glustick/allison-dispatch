@@ -9,12 +9,18 @@ import { getSyncStates } from './queries.js'
 // endpoint surface.
 
 export class SyncFailure extends Error {
-  readonly kind: 'm3u' | 'epg'
-  constructor(kind: 'm3u' | 'epg', message: string, options?: { cause?: unknown }) {
+  readonly kind: SyncKind
+  constructor(kind: SyncKind, message: string, options?: { cause?: unknown }) {
     super(message, options)
     this.kind = kind
     this.name = 'SyncFailure'
   }
+}
+
+export type SyncKind = 'm3u' | 'epg' | 'vod'
+
+export interface VodAuth {
+  getAccessToken: () => Promise<string>
 }
 
 export interface SyncDeps {
@@ -29,12 +35,20 @@ export interface SyncDeps {
    * appear in the grid and "Watch from start" can replay them.
    */
   prevDays?: number
+  /**
+   * Bearer-token source for authed REST surfaces (VOD library sync). Absent → syncVod
+   * fails with a clear "account not configured" SyncFailure.
+   */
+  vodAuth?: VodAuth
+  /** Page size for the paged VOD library fetch. Default 500. */
+  vodPageSize?: number
   now?: () => number
 }
 
 export interface SyncSummary {
   m3u: { channels: number; skipped: number } | null
   epg: { programmes: number; channels: number } | null
+  vod: { movies: number } | null
 }
 
 const M3U_TIMEOUT_MS = 30_000
@@ -52,29 +66,29 @@ interface StateRow {
   error: string | null
 }
 
-function markRunning(db: Db, kind: 'm3u' | 'epg'): void {
+function markRunning(db: Db, kind: SyncKind): void {
   db.prepare(
     `INSERT INTO sync_state (kind, status, last_run_utc) VALUES (?, 'running', ?)
      ON CONFLICT(kind) DO UPDATE SET status = 'running', last_run_utc = excluded.last_run_utc, error = NULL`
   ).run(kind, Date.now())
 }
 
-function markOk(db: Db, kind: 'm3u' | 'epg', count: number): void {
+function markOk(db: Db, kind: SyncKind, count: number): void {
   db.prepare(
     `UPDATE sync_state SET status = 'ok', item_count = ?, error = NULL, last_run_utc = ? WHERE kind = ?`
   ).run(count, Date.now(), kind)
 }
 
-function markError(db: Db, kind: 'm3u' | 'epg', error: string): void {
+function markError(db: Db, kind: SyncKind, error: string): void {
   db.prepare(
     `UPDATE sync_state SET status = 'error', error = ?, last_run_utc = ? WHERE kind = ?`
   ).run(error, Date.now(), kind)
 }
 
 // In-flight guards so a manual sync and the scheduler can't double-run the same kind.
-const inFlight = { m3u: false, epg: false }
+const inFlight: Record<SyncKind, boolean> = { m3u: false, epg: false, vod: false }
 
-export function syncStateIsRunning(db: Db, kind: 'm3u' | 'epg'): boolean {
+export function syncStateIsRunning(db: Db, kind: SyncKind): boolean {
   return getSyncStates(db)[kind]?.status === 'running' || inFlight[kind]
 }
 
@@ -192,10 +206,114 @@ export async function syncEpg(deps: SyncDeps): Promise<SyncSummary['epg']> {
   }
 }
 
-export async function runSync(deps: SyncDeps, kinds: Array<'m3u' | 'epg'> = ['m3u', 'epg']): Promise<SyncSummary> {
-  const summary: SyncSummary = { m3u: null, epg: null }
+export async function syncVod(deps: SyncDeps): Promise<SyncSummary['vod']> {
+  if (deps.vodAuth === undefined) {
+    throw new SyncFailure('vod', 'No Dispatcharr account configured — set it in Settings to sync the VOD library')
+  }
+  if (inFlight.vod) throw new SyncFailure('vod', 'VOD sync already running')
+  inFlight.vod = true
+  const { db } = deps
+  markRunning(db, 'vod')
+  try {
+    // Paged fetch of the whole library: the live instance carries ~26k movies; at 500 a
+    // page that is ~53 requests. Rows accumulate and land in ONE replace-all transaction —
+    // the playlist pattern (the list is the whole truth), sized to a few MB of memory.
+    const pageSize = deps.vodPageSize ?? 500
+    const rows: Array<{
+      id: number
+      uuid: string
+      name: string
+      year: number | null
+      rating: string | null
+      genre: string | null
+      description: string | null
+      duration_secs: number | null
+      logo_path: string | null
+      is_adult: boolean
+    }> = []
+    for (let page = 1; ; page++) {
+      const token = await deps.vodAuth.getAccessToken()
+      const res = await fetch(`${deps.dispatcharrUrl}/api/vod/movies/?page_size=${pageSize}&page=${page}`, {
+        signal: AbortSignal.timeout(EPG_TIMEOUT_MS),
+        headers: { authorization: `Bearer ${token}`, accept: 'application/json' }
+      })
+      if (res.status === 401) {
+        throw new SyncFailure('vod', 'Dispatcharr rejected the account credentials for the VOD library')
+      }
+      if (!res.ok) {
+        throw new SyncFailure('vod', `Dispatcharr answered ${res.status} for the VOD library (page ${page})`)
+      }
+      const body = (await res.json()) as {
+        results?: Array<{
+          id?: unknown
+          uuid?: unknown
+          name?: unknown
+          year?: unknown
+          rating?: unknown
+          genre?: unknown
+          description?: unknown
+          duration_secs?: unknown
+          is_adult?: unknown
+          logo?: { cache_url?: unknown } | null
+        }>
+        next?: unknown
+      }
+      for (const m of body.results ?? []) {
+        if (typeof m.id !== 'number' || typeof m.uuid !== 'string' || typeof m.name !== 'string') continue
+        const cacheUrl = typeof m.logo?.cache_url === 'string' ? m.logo.cache_url : null
+        let logoPath: string | null = null
+        if (cacheUrl !== null) {
+          try {
+            const parsed = new URL(cacheUrl)
+            logoPath = parsed.pathname + parsed.search
+          } catch {
+            logoPath = null
+          }
+        }
+        rows.push({
+          id: m.id,
+          uuid: m.uuid,
+          name: m.name,
+          year: typeof m.year === 'number' ? m.year : null,
+          rating: typeof m.rating === 'string' ? m.rating : null,
+          genre: typeof m.genre === 'string' ? m.genre : null,
+          description: typeof m.description === 'string' ? m.description : null,
+          duration_secs: typeof m.duration_secs === 'number' ? m.duration_secs : null,
+          logo_path: logoPath,
+          is_adult: m.is_adult === true
+        })
+      }
+      if (typeof body.next !== 'string' || body.next === '') break
+      if (page > 500) throw new SyncFailure('vod', 'VOD library pagination did not terminate')
+    }
+
+    const nowIso = new Date(deps.now?.() ?? Date.now()).toISOString()
+    const insert = db.prepare(
+      `INSERT OR REPLACE INTO vod_movies (id, uuid, name, year, rating, genre, description, duration_secs, logo_path, is_adult, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    db.transaction(() => {
+      db.prepare('DELETE FROM vod_movies').run()
+      for (const r of rows) {
+        insert.run(r.id, r.uuid, r.name, r.year, r.rating, r.genre, r.description, r.duration_secs, r.logo_path, r.is_adult ? 1 : 0, nowIso)
+      }
+    })()
+    markOk(db, 'vod', rows.length)
+    return { movies: rows.length }
+  } catch (err) {
+    const message = err instanceof SyncFailure ? err.message : describeFetchError(err, 'VOD')
+    markError(db, 'vod', message)
+    throw err instanceof SyncFailure ? err : new SyncFailure('vod', message, { cause: err })
+  } finally {
+    inFlight.vod = false
+  }
+}
+
+export async function runSync(deps: SyncDeps, kinds: SyncKind[] = ['m3u', 'epg']): Promise<SyncSummary> {
+  const summary: SyncSummary = { m3u: null, epg: null, vod: null }
   if (kinds.includes('m3u')) summary.m3u = await syncM3u(deps)
   if (kinds.includes('epg')) summary.epg = await syncEpg(deps)
+  if (kinds.includes('vod')) summary.vod = await syncVod(deps)
   return summary
 }
 

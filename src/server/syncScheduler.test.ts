@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { startSyncScheduler, type SyncKind } from './syncScheduler.js'
+import { startSyncScheduler, type SchedulerSyncKind } from './syncScheduler.js'
 
 // The cadence is the contract: boot sync once, then each kind on its own repeating interval.
 // These tests exist because the first shipped scheduler used a single setTimeout per kind —
@@ -13,8 +13,8 @@ describe('startSyncScheduler', () => {
     vi.useRealTimers()
   })
 
-  function record(): { calls: SyncKind[][]; count: (kind: SyncKind) => number } {
-    const calls: SyncKind[][] = []
+  function record(): { calls: SchedulerSyncKind[][]; count: (kind: SchedulerSyncKind) => number } {
+    const calls: SchedulerSyncKind[][] = []
     return {
       calls,
       count: (kind) => calls.filter((c) => c.includes(kind)).length

@@ -2,8 +2,9 @@ import { loadConfig } from './config.js'
 import { createApp } from './app.js'
 import { readAppVersion } from './version.js'
 import { openDb } from './db.js'
-import { resolveDispatcharrUrl } from './settingsStore.js'
+import { resolveDispatcharrUrl, resolveDispatcharrAccount } from './settingsStore.js'
 import { runSync, SyncFailure } from './sync.js'
+import { createDispatcharrAuth } from './dispatcharrAuth.js'
 import { ensureSeedUser, validatePassword, validateUsername } from './auth.js'
 import { startBackupLoop } from './backup.js'
 import { startSyncScheduler } from './syncScheduler.js'
@@ -48,11 +49,24 @@ app.listen(cfg.port, () => {
 // so after the first refresh the lineup and guide went stale until the next container
 // restart. In-flight double-runs are guarded in sync.ts; failures are already recorded in
 // sync_state, so here we only log one line.
+let vodAuthCache: { key: string; auth: ReturnType<typeof createDispatcharrAuth> } | null = null
+
 startSyncScheduler({
   run: (kinds) => {
     const base = resolveDispatcharrUrl(db, cfg.dispatcharrUrl)
     if (base === null) return
-    return runSync({ db, dispatcharrUrl: base }, kinds).catch((err: unknown) => {
+    // VOD sync rides the REST account (same credentials the catch-up relay uses); the auth
+    // instance is cached per resolved credentials so the JWT cache survives across ticks.
+    const account = resolveDispatcharrAccount(db, cfg.dispatcharrUsername, cfg.dispatcharrPassword)
+    let vodAuth
+    if (account !== null) {
+      const key = `${base}|${account.username}|${account.password}`
+      if (vodAuthCache?.key !== key) {
+        vodAuthCache = { key, auth: createDispatcharrAuth({ baseUrl: base, username: account.username, password: account.password }) }
+      }
+      vodAuth = vodAuthCache.auth
+    }
+    return runSync({ db, dispatcharrUrl: base, vodAuth }, kinds).catch((err: unknown) => {
       const message = err instanceof SyncFailure ? err.message : String(err)
       console.log(`[sync] ${kinds.join('+')} failed: ${message}`)
     })

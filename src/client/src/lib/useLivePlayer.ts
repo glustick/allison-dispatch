@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import mpegts from 'mpegts.js'
 import type { Channel } from './api.js'
 import { buildPlaybackUrl, describeMediaInfo, fetchPlayInfo, lastBufferedEnd, type PlaybackPrefs } from './playback.js'
+import { getJson, type VodPlayInfo } from './api.js'
 import { LivePlaybackMonitor } from './liveMonitor.js'
 
 // One live player instance, extracted verbatim from WatchView's inline effect so the
@@ -31,7 +32,7 @@ export interface LivePlayer {
   restart: () => void
 }
 
-export function useLivePlayer(channel: Channel | null, prefs: PlaybackPrefs, initialMuted = false): LivePlayer {
+export function useLivePlayer(channel: Channel | null, prefs: PlaybackPrefs, initialMuted = false, vod?: { uuid: string } | null): LivePlayer {
   const [status, setStatus] = useState<StatusState>({ kind: 'idle', message: null })
   const [codecNote, setCodecNote] = useState<string | null>(null)
   const [audioOnly, setAudioOnly] = useState(false)
@@ -73,7 +74,7 @@ export function useLivePlayer(channel: Channel | null, prefs: PlaybackPrefs, ini
   // Player lifecycle — re-runs on channel change, pref change, or restart (gen bump).
   useEffect(() => {
     const video = videoRef.current
-    if (!channel || !video) {
+    if ((!channel && (vod === null || vod === undefined)) || !video) {
       setStatus({ kind: 'idle', message: null })
       setCodecNote(null)
       setAudioOnly(false)
@@ -109,14 +110,21 @@ export function useLivePlayer(channel: Channel | null, prefs: PlaybackPrefs, ini
       setAudioOnly(false)
       monitor.reset()
       try {
-        const info = await fetchPlayInfo(channel.uuid, prefsRef.current.format, prefsRef.current.maxHeight, channel.catchupStartMs)
+        // VOD mode: the movie's stable relay path (the relay resolves the Dispatcharr token
+        // itself); live/catch-up mode: the channel play-info endpoint as before.
+        const playUrl = vod !== null && vod !== undefined
+          ? getJson<VodPlayInfo>(`/api/vod/play/${encodeURIComponent(vod.uuid)}`).then((i) => `${i.relay}?fixaudio=1`)
+          : channel !== null
+            ? fetchPlayInfo(channel.uuid, prefsRef.current.format, prefsRef.current.maxHeight, channel.catchupStartMs).then((info) => buildPlaybackUrl(info))
+            : Promise.reject(new Error('nothing selected'))
+        const url = await playUrl
         if (disposed) return
         if (!mpegts.isSupported()) {
           setStatus({ kind: 'failed', message: 'This browser cannot play live MPEG-TS (Media Source Extensions unsupported).' })
           return
         }
         player = mpegts.createPlayer(
-          { type: 'mpegts', isLive: true, url: buildPlaybackUrl(info) },
+          { type: 'mpegts', isLive: vod == null, url },
           // Live hygiene: enough IO stash to ride out the proxy's bursty feed (stash OFF made
           // playback underrun constantly on real channels), plus latency chasing so the
           // buffer can't drift far behind the live edge.
@@ -175,8 +183,9 @@ export function useLivePlayer(channel: Channel | null, prefs: PlaybackPrefs, ini
     // The effect intentionally keys on channel/codec facts/restart only — status updates
     // and the retry budget flow through refs and setters that stay stable across re-runs.
     // A quality change restarts the stream (restart-for-quality, like the sibling app);
-    // so does a catch-up marker appearing on the channel (live ↔ watch-from-start).
-  }, [channel?.uuid, channel?.catchupStartMs, prefs.format, prefs.maxHeight, gen])
+    // so does a catch-up marker appearing on the channel (live ↔ watch-from-start) and a
+    // VOD selection replacing the channel (or vice versa).
+  }, [channel?.uuid, channel?.catchupStartMs, prefs.format, prefs.maxHeight, gen, vod?.uuid])
 
   // Retry budget: per channel selection, shared by stall + error paths.
   useEffect(() => {

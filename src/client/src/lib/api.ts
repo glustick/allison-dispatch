@@ -89,6 +89,32 @@ export interface RemindersResponse {
   reminders: Reminder[]
 }
 
+// ---- VOD (movies synced from Dispatcharr's REST library) ----
+export interface VodMovie {
+  id: number
+  uuid: string
+  name: string
+  year: number | null
+  rating: string | null
+  genre: string | null
+  description: string | null
+  duration_secs: number | null
+  logo: string | null
+}
+
+export interface VodMoviesResponse {
+  count: number
+  page: number
+  pageSize: number
+  movies: VodMovie[]
+}
+
+export interface VodPlayInfo {
+  uuid: string
+  name: string
+  relay: string
+}
+
 export async function getJson<T>(url: string): Promise<T> {
   const res = await fetch(url)
   if (!res.ok) throw new Error(`GET ${url} failed with ${res.status}`)

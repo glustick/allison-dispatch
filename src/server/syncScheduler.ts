@@ -9,14 +9,15 @@
 // scheduling is invisible in production (the first refresh still happens) and would otherwise
 // only show up as a guide that quietly stops having tomorrow in it.
 
-export type SyncKind = 'm3u' | 'epg'
+export type SchedulerSyncKind = 'm3u' | 'epg' | 'vod'
 
 export interface SyncSchedulerOptions {
   /** Fire-and-forget: failures are the callback's business (sync.ts records them in sync_state). */
-  run: (kinds: SyncKind[]) => void | Promise<unknown>
+  run: (kinds: SchedulerSyncKind[]) => void | Promise<unknown>
   bootDelayMs?: number
   m3uIntervalMs?: number
   epgIntervalMs?: number
+  vodIntervalMs?: number
   jitterMs?: number
   /** Test seam for deterministic jitter. */
   random?: () => number
@@ -30,6 +31,7 @@ export const SYNC_DEFAULTS = {
   bootDelayMs: 5_000,
   m3uIntervalMs: 60 * 60 * 1000,
   epgIntervalMs: 6 * 60 * 60 * 1000,
+  vodIntervalMs: 24 * 60 * 60 * 1000,
   jitterMs: 15 * 60 * 1000
 } as const
 
@@ -37,6 +39,7 @@ export function startSyncScheduler(options: SyncSchedulerOptions): SyncScheduler
   const bootDelayMs = options.bootDelayMs ?? SYNC_DEFAULTS.bootDelayMs
   const m3uIntervalMs = options.m3uIntervalMs ?? SYNC_DEFAULTS.m3uIntervalMs
   const epgIntervalMs = options.epgIntervalMs ?? SYNC_DEFAULTS.epgIntervalMs
+  const vodIntervalMs = options.vodIntervalMs ?? SYNC_DEFAULTS.vodIntervalMs
   const jitterMs = options.jitterMs ?? SYNC_DEFAULTS.jitterMs
   const random = options.random ?? Math.random
 
@@ -57,19 +60,21 @@ export function startSyncScheduler(options: SyncSchedulerOptions): SyncScheduler
 
   // One cadence: run, then re-arm for the next tick. This is the whole fix — the previous
   // version armed exactly one timeout and considered the job done.
-  const loop = (kinds: SyncKind[], intervalMs: number): void => {
+  const loop = (kinds: SchedulerSyncKind[], intervalMs: number): void => {
     arm(() => {
       void options.run(kinds)
       loop(kinds, intervalMs)
     }, intervalMs + Math.floor(random() * jitterMs))
   }
 
-  // Boot sync (both kinds) once, then the two independent cadences. Intervals are measured
-  // from the boot sync rather than from process start, so a slow start doesn't stack runs.
+  // Boot sync once, then the independent cadences (lineup hourly, guide 6-hourly, VOD
+  // library daily — a snapshot, not a live surface). Intervals are measured from the boot
+  // sync rather than from process start, so a slow start doesn't stack runs.
   arm(() => {
     void options.run(['m3u', 'epg'])
     loop(['m3u'], m3uIntervalMs)
     loop(['epg'], epgIntervalMs)
+    loop(['vod'], vodIntervalMs)
   }, bootDelayMs)
 
   return {

@@ -127,11 +127,15 @@ function spawnAudioFixer(onFfmpegSpawn: ((proc: ChildProcess) => void) | undefin
   return ff
 }
 
-export async function relayStream(deps: RelayDeps, uuid: string, format: 'mpegts' | 'fmp4' | null, clientRes: ServerResponse, clientReq?: IncomingMessage, fixAudio = false, maxHeight: number | null = null, upstreamUrlOverride?: string): Promise<RelayResult> {
+export async function relayStream(deps: RelayDeps, uuid: string, format: 'mpegts' | 'fmp4' | null, clientRes: ServerResponse, clientReq?: IncomingMessage, fixAudio = false, maxHeight: number | null = null, upstreamUrlOverride?: string, opts?: { skipChannelCheck?: boolean }): Promise<RelayResult> {
   const fetchImpl = deps.fetchImpl ?? fetch
-  const known = deps.db.prepare('SELECT 1 FROM channels WHERE uuid = ?').get(uuid)
-  if (!known) {
-    return { ok: false, status: 404, error: 'unknown channel' }
+  // The known-channel guard is the live relay's open-proxy defense; the VOD relay (which
+  // always passes an upstream override AND checks its own movie table first) opts out.
+  if (opts?.skipChannelCheck !== true) {
+    const known = deps.db.prepare('SELECT 1 FROM channels WHERE uuid = ?').get(uuid)
+    if (!known) {
+      return { ok: false, status: 404, error: 'unknown channel' }
+    }
   }
 
   const upstreamController = new AbortController()

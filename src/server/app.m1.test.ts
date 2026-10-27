@@ -303,7 +303,7 @@ describe('M1 API surfaces', () => {
 // Type-level guard: the app's sync contract stays honest.
 describe('SyncSummary shape', () => {
   it('allows null halves', () => {
-    const summary: SyncSummary = { m3u: null, epg: null }
+    const summary: SyncSummary =  { m3u: null, epg: null, vod: null }
     expect(summary.m3u).toBeNull()
   })
 })

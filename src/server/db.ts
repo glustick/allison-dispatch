@@ -98,6 +98,27 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (user_id, tvg_id, start_utc)
   );
   CREATE INDEX IF NOT EXISTS idx_reminders_start ON reminders (user_id, start_utc);
+  `,
+  // v5 — VOD movie library (synced from Dispatcharr's REST: /api/vod/movies/, 26k titles on
+  // the live instance). `id` is Dispatcharr's own stable id; logo_path is the PATH of
+  // Dispatcharr's logo-cache URL (host-independent, rewritten to the proxy at emission).
+  // Series are deliberately not synced yet: the live provider carries 9k series with zero
+  // ingested episodes — /api/vod/episodes/ is empty — so the v1 VOD surface is movies only.
+  `
+  CREATE TABLE IF NOT EXISTS vod_movies (
+    id INTEGER PRIMARY KEY,
+    uuid TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    year INTEGER,
+    rating TEXT,
+    genre TEXT,
+    description TEXT,
+    duration_secs INTEGER,
+    logo_path TEXT,
+    is_adult INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_vod_movies_name ON vod_movies (name);
   `
 ]
 

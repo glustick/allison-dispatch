@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import WatchView from './components/WatchView.js'
+import VodView from './components/VodView.js'
 import SettingsView from './components/SettingsView.js'
 import LoginScreen from './components/LoginScreen.js'
 import { getJson, sendJson, type Channel } from './lib/api.js'
@@ -14,7 +15,7 @@ interface SessionUser {
   isAdmin: boolean
 }
 
-type Tab = 'tv' | 'settings'
+type Tab = 'tv' | 'vod' | 'settings'
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('tv')
@@ -98,6 +99,13 @@ export default function App() {
         </button>
         <button
           type="button"
+          className={tab === 'vod' ? 'tab tab-active' : 'tab'}
+          onClick={() => setTab('vod')}
+        >
+          Movies
+        </button>
+        <button
+          type="button"
           className={tab === 'settings' ? 'tab tab-active' : 'tab'}
           onClick={() => setTab('settings')}
         >
@@ -105,6 +113,7 @@ export default function App() {
         </button>
       </nav>
       {tab === 'tv' && <WatchView />}
+      {tab === 'vod' && <VodView />}
       {tab === 'settings' && <SettingsView currentUser={authState} />}
     </main>
   )

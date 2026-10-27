@@ -7,7 +7,7 @@ import { normalizeDispatcharrUrl } from './config.js'
 import { readAppVersion } from './version.js'
 import { listChannels, nowNext, guideWindow, guideGrid, searchProgrammes, getSyncStates } from './queries.js'
 import { getSetting, setSetting, setDispatcharrUrl, clearDispatcharrUrl, resolveDispatcharrUrl, resolveDispatcharrAccount, SETTING_KEYS } from './settingsStore.js'
-import { runSync, SyncFailure, type SyncSummary } from './sync.js'
+import { runSync, SyncFailure, type SyncSummary, type SyncKind } from './sync.js'
 import { relayStream, buildStreamUrl, validateOutputFormat, validateMaxHeight, parseFixAudio } from './relay.js'
 import { addFavorite, removeFavorite, listFavorites, listRecents, recordWatch } from './userData.js'
 import { listReminders, addReminder, removeReminder, type ReminderRow } from './reminders.js'
@@ -42,7 +42,7 @@ export interface ConnectionTestResult {
 export interface AppServices {
   /** Presence of a database enables the M1 surfaces (channels, EPG, sync, settings). */
   db?: Db
-  runSyncFn?: (db: Db, kinds: Array<'m3u' | 'epg'>) => Promise<SyncSummary>
+  runSyncFn?: (db: Db, kinds: SyncKind[]) => Promise<SyncSummary>
   testConnectionFn?: (base: string) => Promise<ConnectionTestResult>
   clock?: () => number
   /** Test seam; production builds its own from the db + SESSION_SECRET env. */
@@ -447,14 +447,16 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
 
   // ---- M1/M2 surfaces (behind the auth gate above) ----
   if (db) {
-    const runSyncFn = services.runSyncFn ?? ((d: Db, kinds: Array<'m3u' | 'epg'>) => {
+    const runSyncFn = services.runSyncFn ?? ((d: Db, kinds: SyncKind[]) => {
       const base = resolveDispatcharrUrl(d, cfg.dispatcharrUrl)
       if (base === null) return Promise.reject(new SyncFailure('m3u', 'Dispatcharr URL is not configured'))
       // Thread the app clock through: EPG retention must judge "old" against the same clock
       // the tests inject, not the wall (a suite run days after fixture data would wipe it).
       // prev_days=2: the guide carries two days of ENDED programmes so "Watch from start"
       // can replay anything inside the provider's catch-up windows.
-      return runSync({ db: d, dispatcharrUrl: base, now: clock, prevDays: 2 }, kinds)
+      const account = resolveDispatcharrAccount(d, cfg.dispatcharrUsername, cfg.dispatcharrPassword)
+      const vodAuth = account !== null ? getDispatcharrAuth(base, account) : undefined
+      return runSync({ db: d, dispatcharrUrl: base, now: clock, prevDays: 2, vodAuth }, kinds)
     })
 
     app.get('/api/channels', (_req: Request, res: Response) => {
@@ -637,6 +639,120 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
       })
     })
 
+    // ---- VOD library (movies synced from Dispatcharr's REST; see syncVod) ----
+    app.get('/api/vod/movies', (req: Request, res: Response) => {
+      const q = typeof req.query.q === 'string' ? req.query.q.trim() : ''
+      const pageRaw = Number(req.query.page)
+      const page = Number.isFinite(pageRaw) && pageRaw >= 1 ? Math.floor(pageRaw) : 1
+      const sizeRaw = Number(req.query.page_size)
+      const pageSize = Number.isFinite(sizeRaw) && sizeRaw >= 1 ? Math.min(Math.floor(sizeRaw), 200) : 60
+      const base = resolveDispatcharrUrl(db, cfg.dispatcharrUrl)
+      const needle = `%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`
+      const where = q === '' ? '' : 'WHERE name LIKE ? ESCAPE \'\\\''
+      const params = q === '' ? [] : [needle]
+      const total = db.prepare(`SELECT COUNT(*) AS n FROM vod_movies ${where}`).get(...params) as { n: number }
+      const rows = db
+        .prepare(
+          `SELECT id, uuid, name, year, rating, genre, description, duration_secs, logo_path
+           FROM vod_movies ${where}
+           ORDER BY name COLLATE NOCASE
+           LIMIT ? OFFSET ?`
+        )
+        .all(...params, pageSize, (page - 1) * pageSize) as Array<{
+        id: number
+        uuid: string
+        name: string
+        year: number | null
+        rating: string | null
+        genre: string | null
+        description: string | null
+        duration_secs: number | null
+        logo_path: string | null
+      }>
+      res.json({
+        count: total.n,
+        page,
+        pageSize,
+        movies: rows.map((m) => ({
+          id: m.id,
+          uuid: m.uuid,
+          name: m.name,
+          year: m.year,
+          rating: m.rating,
+          genre: m.genre,
+          description: m.description,
+          duration_secs: m.duration_secs,
+          logo: proxiedLogoUrl(base, m.logo_path)
+        }))
+      })
+    })
+
+    // Play info for a movie: the relay path is stable and the relay itself resolves a fresh
+    // Dispatcharr token per request, so retries just work.
+    app.get('/api/vod/play/:uuid', (req: Request, res: Response) => {
+      const movie = db.prepare('SELECT id, uuid, name FROM vod_movies WHERE uuid = ?').get(req.params.uuid) as
+        | { id: number; uuid: string; name: string }
+        | undefined
+      if (movie === undefined) {
+        res.status(404).json({ error: 'movie not found' })
+        return
+      }
+      res.json({ uuid: movie.uuid, name: movie.name, relay: `/api/relay/vod/${movie.uuid}` })
+    })
+
+    // VOD relay: Dispatcharr's VOD proxy auths the FIRST request via ?token= and answers a
+    // 301 to a session path that needs no further auth — fetch follows the redirect, so the
+    // pipe below is the same audio-fix relay as live. The uuid must be a synced movie (open
+    // proxy guard); watch history is channel-domain and deliberately not recorded for VOD.
+    app.get('/api/relay/vod/:uuid', (req: Request, res: Response) => {
+      const base = resolveDispatcharrUrl(db, cfg.dispatcharrUrl)
+      if (base === null) {
+        res.status(400).json({ error: 'Dispatcharr URL is not configured' })
+        return
+      }
+      const account = resolveDispatcharrAccount(db, cfg.dispatcharrUsername, cfg.dispatcharrPassword)
+      if (account === null) {
+        res.status(400).json({ error: 'No Dispatcharr account configured — set it in Settings to use VOD' })
+        return
+      }
+      const movie = db.prepare('SELECT uuid FROM vod_movies WHERE uuid = ?').get(req.params.uuid)
+      if (movie === undefined) {
+        res.status(404).json({ error: 'movie not found' })
+        return
+      }
+      const fixAudio = parseFixAudio(req.query.fixaudio)
+      if (cfg.relayMaxStreams > 0 && activeRelays >= cfg.relayMaxStreams) {
+        res.status(429).json({ error: `Too many active streams (limit ${cfg.relayMaxStreams}) — stop one and try again` })
+        return
+      }
+      activeRelays++
+      getDispatcharrAuth(base, account)
+        .getAccessToken()
+        .then((token) => {
+          return relayStream(
+            { db, dispatcharrUrl: base },
+            req.params.uuid,
+            null,
+            res,
+            req,
+            fixAudio,
+            null,
+            `${base}/proxy/vod/movie/${req.params.uuid}?token=${encodeURIComponent(token)}`,
+            { skipChannelCheck: true }
+          )
+        })
+        .then((result) => {
+          if (!result.ok && !res.headersSent) res.status(result.status).json({ error: result.error })
+        })
+        .catch(() => {
+          if (!res.headersSent) res.status(502).json({ error: 'relay failed' })
+          else res.destroy()
+        })
+        .finally(() => {
+          activeRelays--
+        })
+    })
+
     // Relay mode: BFF pipes the stream (for mixed-content / debugging cases). Restricted to
     // known channel uuids — see relay.ts. An optional max_height turns the audio-fix ffmpeg
     // into a capped video re-encode.
@@ -690,11 +806,11 @@ export function createApp(cfg: AppConfig, services: AppServices = {}): Express {
 
     app.post('/api/sync/run', (req: Request, res: Response) => {
       const requested = (req.body as { kinds?: unknown } | undefined)?.kinds
-      const kinds: Array<'m3u' | 'epg'> = Array.isArray(requested)
-        ? requested.filter((k): k is 'm3u' | 'epg' => k === 'm3u' || k === 'epg')
+      const kinds: SyncKind[] = Array.isArray(requested)
+        ? requested.filter((k): k is SyncKind => k === 'm3u' || k === 'epg' || k === 'vod')
         : ['m3u', 'epg']
       if (kinds.length === 0) {
-        res.status(400).json({ error: 'kinds must contain m3u and/or epg' })
+        res.status(400).json({ error: 'kinds must contain m3u, epg and/or vod' })
         return
       }
       if (resolveDispatcharrUrl(db, cfg.dispatcharrUrl) === null) {

@@ -24,7 +24,10 @@ upgrades. First boot seeds an admin from `SEED_ADMIN_USERNAME`/`SEED_ADMIN_PASSW
 Users (create/delete/set password, last-admin and self-deletion guards); everyone can
 change their own password there. Failed logins are throttled per IP (5 per 15 min).
 
-One **TV** screen (watch + guide + channels combined) plus **Settings**. The TV screen:
+One **TV** screen (watch + guide + channels combined), a **Movies** screen (the provider's
+VOD library — 26k titles on the live instance — synced daily from Dispatcharr's REST into
+SQLite, searched and paged server-side, played through the same audio-fix relay; content
+availability is provider-side), plus **Settings**. The TV screen:
 resizable channel bar on the left (search + group filter, channel logos, numeric search —
 "150" finds the 1503+ block), player with now/next on the right, and the EPG guide grid
 under the player (drag-to-pan, 3-hour steps, a **Prime time** jump and group/★ filters,

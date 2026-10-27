@@ -41,6 +41,8 @@ export interface FakeDispatcharrOptions {
   streamFile?: string
   /** When set, the fake serves the JWT + catch-up REST surface with these credentials (probed live on v0.31.0: /api/accounts/token/, /api/catchup/sessions/, /proxy/catchup/…). */
   account?: { username: string; password: string }
+  /** When set (with account), /api/vod/movies/ serves this library paged, and /proxy/vod/movie/<uuid>?token= streams it. */
+  vodMovies?: Array<{ id: number; uuid: string; name: string; year?: number | null; logoPath?: string | null }>
 }
 
 function sendSpaIndex(res: ServerResponse): void {
@@ -66,6 +68,7 @@ export async function startFakeDispatcharr(opts: FakeDispatcharrOptions): Promis
   const issuedAccess = new Set<string>()
   const issuedRefresh = new Set<string>()
   const sessions = new Map<string, string>() // session_id → channel_uuid
+  const vodSessions = new Set<string>()
   let tokenSeq = 0
 
   function fakeJwt(tokenType: 'access' | 'refresh', lifetimeSec: number): string {
@@ -210,6 +213,93 @@ export async function startFakeDispatcharr(opts: FakeDispatcharrOptions): Promis
     if (logoMatch) {
       res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': FAKE_LOGO_PNG.length })
       res.end(FAKE_LOGO_PNG)
+      return
+    }
+
+    if (opts.account !== undefined && opts.vodMovies !== undefined && reqUrl.pathname === '/api/vod/movies/') {
+      const token = bearerToken(req)
+      if (token === null || !issuedAccess.has(token)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ detail: 'Authentication credentials were not provided or were invalid.' }))
+        return
+      }
+      const pageSize = Math.max(1, Number(reqUrl.searchParams.get('page_size') ?? '500'))
+      const page = Math.max(1, Number(reqUrl.searchParams.get('page') ?? '1'))
+      const startIdx = (page - 1) * pageSize
+      const slice = opts.vodMovies.slice(startIdx, startIdx + pageSize)
+      const next = startIdx + pageSize < opts.vodMovies.length ? `${origin}/api/vod/movies/?page=${page + 1}&page_size=${pageSize}` : null
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        count: opts.vodMovies.length,
+        next,
+        previous: null,
+        results: slice.map((m) => ({
+          id: m.id,
+          uuid: m.uuid,
+          name: m.name,
+          year: m.year ?? null,
+          rating: null,
+          genre: null,
+          description: null,
+          duration_secs: null,
+          is_adult: false,
+          logo: m.logoPath !== undefined && m.logoPath !== null ? { cache_url: origin + m.logoPath } : null
+        }))
+      }))
+      return
+    }
+
+    if (/^\/proxy\/vod\/movie\/([0-9a-fA-F-]+)\/?$/.test(reqUrl.pathname)) {
+      // VOD proxy (probed shape): ?token=<jwt> → 301 to /proxy/vod/movie/<uuid>/<session>;
+      // the session path streams with no further auth. (Exact path only — session paths
+      // fall through to the route below.)
+      if (reqUrl.searchParams.get('token') === null) {
+        res.writeHead(401, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Unauthorized' }))
+        return
+      }
+      const token = reqUrl.searchParams.get('token') ?? ''
+      if (opts.account === undefined || !issuedAccess.has(token)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Unauthorized' }))
+        return
+      }
+      const sessionId = `vod_${Date.now()}_${vodSessions.size}`
+      vodSessions.add(sessionId)
+      res.writeHead(301, { Location: `/proxy/vod/movie/${reqUrl.pathname.split('/')[4]}/${sessionId}` })
+      res.end()
+      return
+    }
+
+    const vodSessionMatch = /^\/proxy\/vod\/movie\/([0-9a-fA-F-]+)\/(vod_.+)$/.exec(reqUrl.pathname)
+    if (vodSessionMatch !== null) {
+      if (!vodSessions.has(vodSessionMatch[2])) {
+        res.writeHead(404, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'No such VOD session.' }))
+        return
+      }
+      streams.opened++
+      streams.open++
+      res.writeHead(200, { 'Content-Type': 'video/mp2t' })
+      const loopBuf = opts.streamFile !== undefined ? readFileSync(opts.streamFile) : null
+      const chunk = loopBuf ?? Buffer.alloc(188 * 4, 0x47)
+      let pos = 0
+      const timer = setInterval(() => {
+        if (loopBuf !== null) {
+          const end = Math.min(pos + 188 * 16, loopBuf.length)
+          res.write(loopBuf.subarray(pos, end))
+          streams.bytesSent += end - pos
+          pos = end >= loopBuf.length ? 0 : end
+        } else {
+          res.write(chunk)
+          streams.bytesSent += chunk.length
+        }
+      }, 20)
+      res.on('close', () => {
+        clearInterval(timer)
+        streams.open--
+        streams.closed++
+      })
       return
     }
 
